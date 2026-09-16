@@ -8,3 +8,10 @@ export const turns = sqliteTable("turns", {
  id:text("id").primaryKey(), storyId:text("story_id").notNull().references(()=>stories.id), parentId:text("parent_id"), data:text("data").notNull(), createdAt:text("created_at").notNull()
 }, t=>[index("idx_turns_story_created").on(t.storyId,t.createdAt)]);
 export const profiles = sqliteTable("profiles", { id:text("id").primaryKey(), owner:text("owner").notNull(), data:text("data").notNull(), encryptedKey:text("encrypted_key").notNull() },t=>[index("idx_profiles_owner").on(t.owner)]);
+export const presets = sqliteTable("presets", {
+ id:text("id").primaryKey(), owner:text("owner").notNull(), data:text("data").notNull(), revision:integer("revision").notNull().default(1)
+},t=>[index("idx_presets_owner").on(t.owner)]);
+export const characterLibrary = sqliteTable("character_library", {
+ id:text("id").primaryKey(), owner:text("owner").notNull(), data:text("data").notNull(),
+ revision:integer("revision").notNull().default(1), createdAt:text("created_at").notNull(), updatedAt:text("updated_at").notNull()
+},t=>[index("idx_character_library_owner_updated").on(t.owner,t.updatedAt)]);

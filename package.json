@@ -15,7 +15,9 @@
     "setup:local": "node scripts/setup-local.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
-    "test:integration": "node tests/integration.mjs"
+    "test:integration": "node tests/integration.mjs",
+    "test:features": "node scripts/test-features.mjs",
+    "test:model-runtime": "node scripts/test-model-runtime.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -41,6 +43,7 @@
     "sonner": "^2.0.8",
     "tailwind-merge": "3.6.0",
     "vaul": "^1.1.2",
+    "yaml": "^2.9.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

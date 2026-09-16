@@ -1,23 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { actorContext, demoTurn, runTurn } from "../lib/tavern/engine";
-import { initialStory } from "../lib/tavern/seed";
+import { initialStory, sampleStory } from "../lib/tavern/seed";
 import { ancestry } from "../lib/tavern/validation";
 import { complete, cryptKey, validateEndpoint } from "../lib/tavern/models";
 import type { Profile } from "../lib/tavern/types";
 
 test("角色上下文只包含自己的秘密与记忆",()=>{
- const s=initialStory();s.characters[1].secret="OTHER_CHARACTER_SECRET";
+ const s=sampleStory();s.characters[1].secret="OTHER_CHARACTER_SECRET";
  const ctx=JSON.stringify(actorContext(s.characters[0],"听见敲门声",""));
  assert.ok(ctx.includes(s.characters[0].secret));assert.ok(!ctx.includes("OTHER_CHARACTER_SECRET"));assert.ok(!ctx.includes(s.characters[1].state.thought));
 });
 test("私下事件不会传给旁白或无关角色；客观状态只接受裁决结果",async()=>{
- const s=initialStory();const original=structuredClone(s);const calls:{id:string;data:Record<string,unknown>}[]=[];
+ const s=sampleStory();const original=structuredClone(s);const calls:{id:string;data:Record<string,unknown>}[]=[];
  const result=await runTurn({story:s,history:[],input:"PRIVATE_RAW_INPUT",mode:"roleplay",directorId:"master",turnId:"t1",call:async(id,system,prompt)=>{
   const data=JSON.parse(prompt);calls.push({id,data});
   if(system.includes("你负责信息分发"))return JSON.stringify({deliveries:[{characterId:"lin",visible:"玩家低声询问信件的来历",direction:""}]});
   if(system.includes("只扮演给定角色"))return JSON.stringify({speech:"稍后再谈。",actionIntent:"尝试拿起信",emotion:"谨慎",thought:"ACTOR_PRIVATE_THOUGHT",goal:"保护秘密",relationship:"保持距离",clothing:"不允许角色自行换装"});
   if(system.includes("你协调实际事件"))return JSON.stringify({events:[{description:"PUBLIC_EVENT",visibleTo:["lin","shen"],visibleToPlayer:true},{description:"HIDDEN_EVENT",visibleTo:["lin"],visibleToPlayer:false}],changes:[{characterId:"lin",clothing:"原衬衫，围裙已取下"}]});
+  if(system.includes("你负责更新角色卡记忆")){if(data.characterId==="shen"){assert.ok(!prompt.includes("ACTOR_PRIVATE_THOUGHT"));assert.ok(!prompt.includes("HIDDEN_EVENT"));}return JSON.stringify({summary:"本轮交谈",facts:["PUBLIC_EVENT"],beliefs:[],openThreads:[]});}
   assert.ok(!prompt.includes("ACTOR_PRIVATE_THOUGHT"));assert.ok(!prompt.includes("HIDDEN_EVENT"));return JSON.stringify({narrative:"林晚略微停顿。“稍后再谈。”"});
  }});
  assert.deepEqual(s,original);assert.equal(result.snapshot.characters[0].state.clothing,"原衬衫，围裙已取下");
@@ -26,19 +27,20 @@ test("私下事件不会传给旁白或无关角色；客观状态只接受裁�
  assert.ok(!JSON.stringify(result.snapshot.characters[1].memories).includes("HIDDEN_EVENT"));
 });
 test("结构无效只重试一次，失败不修改状态",async()=>{
- const story=initialStory();const before=JSON.stringify(story);let calls=0;
+ const story=sampleStory();const before=JSON.stringify(story);let calls=0;
  await assert.rejects(runTurn({story,history:[],input:"hi",mode:"roleplay",directorId:"m",turnId:"t",call:async()=>{calls++;return "not json"}}),/无效结构/);
  assert.equal(calls,2);assert.equal(JSON.stringify(story),before);
 });
 test("未知角色在调用角色模型之前被拒绝",async()=>{
- let count=0;await assert.rejects(runTurn({story:initialStory(),history:[],input:"hi",mode:"roleplay",directorId:"m",turnId:"t",call:async()=>{count++;return '{"deliveries":[{"characterId":"intruder","visible":"x","direction":""}]}'}}),/不存在的角色/);assert.equal(count,1);
+ let count=0;await assert.rejects(runTurn({story:sampleStory(),history:[],input:"hi",mode:"roleplay",directorId:"m",turnId:"t",call:async()=>{count++;return '{"deliveries":[{"characterId":"intruder","visible":"x","direction":""}]}'}}),/不存在的角色/);assert.equal(count,1);
 });
 test("分支上下文只包含祖先，循环与缺失节点被拒绝",()=>{
  const turns=[{id:"a",parentId:null},{id:"b",parentId:"a"},{id:"c",parentId:"a"}];assert.deepEqual(ancestry(turns,"c").map(t=>t.id),["a","c"]);assert.throws(()=>ancestry([{id:"a",parentId:"a"}],"a"),/循环/);assert.throws(()=>ancestry(turns,"missing"),/缺少/);
 });
 test("演示私聊只改变接收人，新快照不会改变原始状态",()=>{
- const story=initialStory();const result=demoTurn(story,"低声告诉林晚一个秘密","roleplay","t1");assert.deepEqual(result.trace.selected,["lin"]);assert.equal(story.characters[0].memories.length,0);assert.equal(result.snapshot.characters[1].memories.length,0);
+ const story=sampleStory();const result=demoTurn(story,"低声告诉林晚一个秘密","roleplay","t1");assert.deepEqual(result.trace.selected,["lin"]);assert.equal(story.characters[0].memories.length,0);assert.equal(result.snapshot.characters[1].memories.length,0);
 });
+test("新故事默认没有任何角色，演示模式也可继续纯旁白",()=>{const story=initialStory();assert.deepEqual(story.characters,[]);const result=demoTurn(story,"走进空旷的房间","roleplay","empty");assert.deepEqual(result.trace.selected,[]);assert.equal(result.snapshot.characters.length,0)});
 test("API 密钥加密可恢复，错误密钥不能解密",async()=>{
  const secret="a".repeat(64);const encrypted=await cryptKey("sk-test-not-real",secret);assert.ok(!encrypted.includes("sk-test"));assert.equal(await cryptKey(encrypted,secret,true),"sk-test-not-real");await assert.rejects(cryptKey(encrypted,"b".repeat(64),true));
 });
@@ -51,7 +53,7 @@ test("四种模型适配的请求与文本提取（模拟响应，无外部费�
  const saved=globalThis.fetch;
  try{for(const provider of ["openai","compatible","anthropic","gemini"] as const){
   const bases={openai:"https://api.openai.com/v1",compatible:"https://api.example.com/v1",anthropic:"https://api.anthropic.com/v1",gemini:"https://generativelanguage.googleapis.com/v1beta"};
-  globalThis.fetch=async(url,init)=>{const headers=init!.headers as Record<string,string>;const body=JSON.parse(init!.body as string);assert.equal(init?.redirect,"error");assert.ok(!String(url).includes("private-key"));
+  globalThis.fetch=async(url,init)=>{const headers=init!.headers as Record<string,string>;const body=JSON.parse(init!.body as string);assert.equal(init?.redirect,"manual");assert.ok(!String(url).includes("private-key"));
    if(provider==="anthropic"){assert.equal(headers["x-api-key"],"private-key");assert.equal(body.system,"system");return Response.json({content:[{type:"text",text:"ok"}]});}
    if(provider==="gemini"){assert.equal(headers["x-goog-api-key"],"private-key");assert.equal(body.systemInstruction.parts[0].text,"system");return Response.json({candidates:[{content:{parts:[{text:"private reasoning",thought:true},{text:"ok"}]}}]});}
    assert.equal(headers.Authorization,"Bearer private-key");assert.equal(body.messages[0].content,"system");return Response.json({choices:[{message:{content:"ok"}}]});

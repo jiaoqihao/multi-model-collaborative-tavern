@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-const origin="http://localhost:5173";
+const origin=process.argv[2]||"http://localhost:5173";
 const headers={"Content-Type":"application/json",Cookie:"__sites_local_auth=1",Origin:origin};
-let storyId;let profileId;
+let storyId;let profileId;let libraryId;
 async function request(body,status=200){const response=await fetch(origin+"/api/tavern",{method:"POST",headers,body:JSON.stringify(body)});const text=await response.text();assert.equal(response.status,status,text);return response.headers.get("content-type").includes("text/event-stream")?text:JSON.parse(text);}
 function done(text){const blocks=text.split("\n\n");const complete=blocks.find(b=>b.startsWith("event: done"));assert.ok(complete,text);return JSON.parse(complete.split("\ndata: ")[1]);}
 try{
  assert.equal((await fetch(origin+"/api/tavern")).status,401);
  const spoof=await fetch(origin+"/api/tavern",{headers:{"oai-authenticated-user-id":"forged-user"}});assert.equal(spoof.status,401);
  const cross=await fetch(origin+"/api/tavern",{method:"POST",headers:{...headers,Origin:"https://unrelated.example"},body:'{"action":"createStory"}'});assert.equal(cross.status,403);
- let ws=await request({action:"createStory"});storyId=ws.id;
- ws=await request({action:"saveStory",storyId,revision:ws.revision,story:{...ws.story,title:"__integration_test__"}});
+ let ws=await request({action:"createStory"});storyId=ws.id;assert.deepEqual(ws.story.characters,[],"新故事必须从空角色列表开始");
+ const baseState={location:"夜航酒馆",clothing:"深色外套",condition:"健康",emotion:"平静",thought:"",goal:"观察",relationship:"初次见面"};
+ const lin={id:crypto.randomUUID(),name:"林晚",role:"酒馆老板",persona:"谨慎",secret:"旧事",color:"amber",modelId:"default",presetId:"inherit",state:{...baseState,clothing:"衬衫和围裙"},memories:[{id:"old",turnId:"old",content:"不应跨故事导入",kind:"observation",importance:3}]};
+ ws=await request({action:"saveLibraryCharacter",storyId,revision:ws.revision,character:lin});libraryId=ws.characterLibrary[0].id;assert.deepEqual(ws.characterLibrary[0].character.memories,[],"角色库不保存故事记忆");
+ ws=await request({action:"importLibraryCharacter",storyId,revision:ws.revision,libraryId});assert.equal(ws.story.characters.length,1);assert.notEqual(ws.story.characters[0].id,lin.id);assert.deepEqual(ws.story.characters[0].memories,[]);
+ const shen={id:crypto.randomUUID(),name:"沈砚",role:"抄写员",persona:"安静",secret:"寻人",color:"blue",modelId:"default",presetId:"inherit",state:{...baseState},memories:[]};
+ ws=await request({action:"saveStory",storyId,revision:ws.revision,story:{...ws.story,title:"__integration_test__",characters:[...ws.story.characters,shen]}});
  const root=structuredClone(ws.story);const firstId=crypto.randomUUID();
  const firstRequest={action:"generate",turn:{storyId,revision:ws.revision,input:"我低声向林晚提问信件的来历",mode:"roleplay",requestId:firstId}};
  ws=done(await request(firstRequest));assert.equal(ws.headId,firstId);assert.equal(ws.story.characters[1].memories.length,0);assert.ok(ws.story.characters[0].memories.length>0);
@@ -29,11 +34,15 @@ try{
  ws=await fetch(origin+"/api/tavern?story="+storyId,{headers}).then(r=>r.json());assert.equal(ws.turns.length,4);
  ws=await request({action:"saveProfile",storyId,profile:{id:"",name:"__test_no_real_api__",provider:"compatible",baseUrl:"https://api.example.com/v1",model:"not-real",apiKey:"FAKE_SECRET_FOR_TEST_ONLY"}});
  const profile=ws.profiles.find(p=>p.name==="__test_no_real_api__");profileId=profile.id;assert.equal(profile.hasKey,true);assert.ok(!JSON.stringify(ws).includes("FAKE_SECRET_FOR_TEST_ONLY"),"密钥不得返回前端");
+ const changedAddress=await request({action:"listModels",connection:{id:profileId,provider:"compatible",baseUrl:"https://other.example.com/v1"}},400);assert.match(changedAddress.error,/重新填写 API 密钥/);
+ const missingKey=await request({action:"listModels",connection:{provider:"compatible",baseUrl:"https://api.example.com/v1"}},400);assert.match(missingKey.error,/填写 API 密钥/);
+ await request({action:"listModels",connection:{id:crypto.randomUUID(),provider:"compatible",baseUrl:"https://api.example.com/v1",apiKey:"FAKE_SECRET_FOR_TEST_ONLY"}},404);
  ws=await request({action:"deleteProfile",storyId,profileId});profileId=null;
- console.log("PASS: 认证、伪造身份、跨站拒绝、导演模式、服饰变化、私聊隔离、重放幂等、并发提交、状态回退、分支重生成、密钥脱敏。");
+ ws=await request({action:"deleteLibraryCharacter",storyId,libraryId,libraryRevision:ws.characterLibrary.find(c=>c.id===libraryId).revision});libraryId=null;
+ console.log("PASS: 空故事、角色库导入、认证、伪造身份、跨站拒绝、导演模式、服饰变化、私聊隔离、重放幂等、并发提交、状态回退、分支重生成、密钥脱敏。");
 }finally{
  if(storyId&&/^[a-f0-9-]{36}$/.test(storyId)){
-  const sql=`DELETE FROM turns WHERE story_id='${storyId}'; DELETE FROM stories WHERE id='${storyId}' AND owner='local_seedy';`+(profileId&&/^[a-f0-9-]{36}$/.test(profileId)?` DELETE FROM profiles WHERE id='${profileId}' AND owner='local_seedy';`:"");
+  const sql=`DELETE FROM turns WHERE story_id='${storyId}'; DELETE FROM stories WHERE id='${storyId}' AND owner='local_seedy';`+(profileId&&/^[a-f0-9-]{36}$/.test(profileId)?` DELETE FROM profiles WHERE id='${profileId}' AND owner='local_seedy';`:"")+(libraryId&&/^[a-f0-9-]{36}$/.test(libraryId)?` DELETE FROM character_library WHERE id='${libraryId}' AND owner='local_seedy';`:"");
   const result=spawnSync(process.execPath,["--import","./scripts/sites-env.mjs","./node_modules/wrangler/bin/wrangler.js","d1","execute","DB","--local","--config","dist/server/wrangler.json","--persist-to",".wrangler/state","--command",sql],{encoding:"utf8"});
   if(result.status!==0){console.error("测试数据清理失败",storyId);process.exitCode=1;}
  }

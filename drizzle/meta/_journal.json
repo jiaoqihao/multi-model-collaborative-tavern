@@ -8,6 +8,20 @@
       "when": 1788975698394,
       "tag": "0000_left_the_anarchist",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789038769231,
+      "tag": "0001_next_magus",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789133709540,
+      "tag": "0002_whole_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }
