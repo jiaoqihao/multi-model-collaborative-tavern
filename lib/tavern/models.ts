@@ -2,7 +2,8 @@ import type { Profile } from "./types";
 import { AppError } from "./validation";
 import type { ChatMessage, Sampling } from "./presets";
 import { fetchModelEndpoint } from "./model-http";
-export type ModelOptions = {messages:ChatMessage[];sampling:Sampling};
+export type ModelOptions = {messages:ChatMessage[];sampling:Sampling;structured?:boolean};
+export function estimateTokens(text:string){const ascii=(text.match(/[\x00-\x7F]/g)||[]).length;return Math.ceil(ascii/4+(text.length-ascii)/1.7)}
 export const endpoints={openai:"https://api.openai.com/v1",compatible:"https://api.deepseek.com/v1",anthropic:"https://api.anthropic.com/v1",gemini:"https://generativelanguage.googleapis.com/v1beta"};
 export function validateEndpoint(profile:Profile){
  const url=new URL(profile.baseUrl);
@@ -16,12 +17,14 @@ export const complete:Responder=async(profile,key,system,prompt,options)=>{
  const base=validateEndpoint(profile); let url="",headers:Record<string,string>={"Content-Type":"application/json"}; let body:unknown;
  const messages:ChatMessage[]=[...(options?.messages||[]),{role:"system",content:system},{role:"user",content:prompt}];
  const sampling=options?.sampling||{};
+ const estimatedInput=estimateTokens(messages.map(m=>m.content).join("\n"));const reserved=sampling.maxTokens??6000;
+ if(profile.contextWindow&&estimatedInput+reserved>profile.contextWindow)throw new AppError(`「${profile.name}」本轮预计需要约 ${estimatedInput+reserved} Token，超过配置的上下文窗口 ${profile.contextWindow}。请缩短预设或历史，或调低输出上限。`,400);
  const common={...(sampling.temperature!==undefined?{temperature:sampling.temperature}:{}),...(sampling.topP!==undefined?{top_p:sampling.topP}:{})};
  const mergedSystem=messages.filter(m=>m.role==="system").map(m=>m.content).join("\n\n");
  const conversation=messages.filter(m=>m.role!=="system");
  if(profile.provider==="anthropic") {url=base+"/messages";headers={...headers,"x-api-key":key,"anthropic-version":"2023-06-01"};if(conversation[0]?.role==="assistant")conversation.unshift({role:"user",content:"以下是提供的上下文。"});body={model:profile.model,max_tokens:sampling.maxTokens??5000,system:mergedSystem,messages:conversation,...(sampling.temperature!==undefined?{temperature:Math.min(sampling.temperature,1)}:sampling.topP!==undefined?{top_p:sampling.topP}:{})};}
  else if(profile.provider==="gemini"){url=base+"/models/"+encodeURIComponent(profile.model.replace(/^models\//,""))+":generateContent";headers["x-goog-api-key"]=key;body={systemInstruction:{parts:[{text:mergedSystem}]},contents:conversation.map(m=>({role:m.role==="assistant"?"model":"user",parts:[{text:m.content}]})),generationConfig:{maxOutputTokens:sampling.maxTokens??6000,...(sampling.temperature!==undefined?{temperature:sampling.temperature}:{}),...(sampling.topP!==undefined?{topP:sampling.topP}:{})}};}
- else{url=base+"/chat/completions";headers.Authorization="Bearer "+key;body={model:profile.model,messages,...common,...(sampling.frequencyPenalty!==undefined?{frequency_penalty:sampling.frequencyPenalty}:{}),...(sampling.presencePenalty!==undefined?{presence_penalty:sampling.presencePenalty}:{}),...(profile.provider==="openai"?{max_completion_tokens:sampling.maxTokens??6000}:{max_tokens:sampling.maxTokens??5000})};}
+ else{url=base+"/chat/completions";headers.Authorization="Bearer "+key;body={model:profile.model,messages,...common,...(options?.structured&&profile.structuredOutput?{response_format:{type:"json_object"}}:{}),...(sampling.frequencyPenalty!==undefined?{frequency_penalty:sampling.frequencyPenalty}:{}),...(sampling.presencePenalty!==undefined?{presence_penalty:sampling.presencePenalty}:{}),...(profile.provider==="openai"?{max_completion_tokens:sampling.maxTokens??6000}:{max_tokens:sampling.maxTokens??5000})};}
  for(let attempt=0;attempt<2;attempt++){
   let response:Response;
   try{response=await fetchModelEndpoint(url,{method:"POST",headers,body:JSON.stringify(body),signal:AbortSignal.timeout(65000)});}catch(error){if(error instanceof AppError)throw error;throw new AppError(`「${profile.name}」连接失败或超时。本轮尚未保存，请检查地址后重试。`,502);}

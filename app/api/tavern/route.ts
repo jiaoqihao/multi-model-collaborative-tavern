@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AppError, ancestry, characterSchema, profileSchema, storySchema, turnSchema } from "@/lib/tavern/validation";
-import { allTurns, characterLibraryRows, commitTurn, createStory, db, encryptionSecret, getStory, getWorkspace, owner, profileRows, presetRows, requireOrigin } from "@/lib/tavern/store";
+import { allTurns, characterLibraryRows, commitTurn, createStory, db, encryptionSecret, generationStageCache, getStory, getWorkspace, owner, profileRows, presetRows, pruneGenerationStages, requireOrigin } from "@/lib/tavern/store";
 import { complete, cryptKey, validateEndpoint } from "@/lib/tavern/models";
 import { demoTurn, runTurn } from "@/lib/tavern/engine";
 import type { Profile, StoryState, Turn } from "@/lib/tavern/types";
@@ -72,7 +72,7 @@ export async function POST(request:Request){try{
   if(action==="saveStory"){
    const story=storySchema.parse(body.story);const current=JSON.parse(row.data) as StoryState;
    story.characters.forEach(c=>{c.memories=current.characters.find(old=>old.id===c.id)?.memories||[];});
-   const valid=new Set((await profileRows(user)).map(p=>p.id));if(story.characters.some(c=>c.modelId!=="default"&&!valid.has(c.modelId)))throw new AppError("角色引用了不存在的模型。");
+   const valid=new Set((await profileRows(user)).map(p=>p.id));if(story.characters.some(c=>c.modelId!=="default"&&!valid.has(c.modelId))||Object.values(story.stageModels).some(id=>id&&!valid.has(id)))throw new AppError("故事阶段或角色引用了不存在的模型。");
    const available=new Set((await presetRows(user)).map(p=>p.id));
    const selected=[...Object.values(story.presetSelection),...story.characters.map(c=>c.presetId).filter(id=>id!=="inherit")].filter(Boolean);
    if(selected.some(id=>!available.has(id)))throw new AppError("所选预设不存在或无权访问。");
@@ -109,20 +109,22 @@ export async function POST(request:Request){try{
    const presetId=context.stage==="actor"&&override!==undefined&&override!=="inherit"?override:story.presetSelection?.[context.stage];
    if(presetId){
     const preset=presets.find(p=>p.id===presetId);if(!preset)throw new AppError("本回合引用的预设不存在，请重新分配预设。");
-    try{options=compilePreset(preset,context)}catch(error){if(error instanceof PresetError)throw new AppError(error.message);throw error;}
+    try{options={...compilePreset(preset,context),structured:true}}catch(error){if(error instanceof PresetError)throw new AppError(error.message);throw error;}
     const provider=(JSON.parse(row.data) as Profile).provider;
     if(provider==="anthropic"||provider==="gemini")options.warnings.push("此服务商将 system 条目合并为系统指令，无法保留它们与对话交错的位置。frequency/presence penalty 未应用。");
     if(provider==="anthropic")options.warnings.push("Claude 适配的 temperature 上限为 1；与 top_p 同时配置时仅发送 temperature。");
     appliedPresets.set(context.stage+":"+(context.characterId||""),{stage:context.stage+(context.characterId?":"+context.characterId:""),name:preset.name,revision:preset.revision,warnings:options.warnings,characters:options.characters});
    }
   }
-  return complete(JSON.parse(row.data) as Profile,keys.get(id)!,system,prompt,options);
+  const text=await complete(JSON.parse(row.data) as Profile,keys.get(id)!,system,prompt,options||{messages:[],sampling:{},structured:true});return {text,contextCharacters:options?.characters||0};
  };
  const stream=new ReadableStream({async start(controller){
   const encoder=new TextEncoder();let open=true;const send=(event:string,data:unknown)=>{if(open)try{controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));}catch{open=false;}};
   try{
    send("progress",{message:row.demo?"正在生成规则演示…":"开始本轮创作…"});
-   const result=row.demo?demoTurn(story,args.input,args.mode,args.requestId):await runTurn({story,history:ancestry(turns,parentId),input:args.input,mode:args.mode,directorId:row.director_id,turnId:args.requestId,call,regenerate:args.regenerate,progress:message=>send("progress",{message})});
+   const fingerprintBytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify({storyId:row.id,revision:row.revision,parentId,input:args.input,mode:args.mode,regenerate:!!args.regenerate,profiles:profiles.map(p=>[p.id,p.data]),presets:presets.map(p=>[p.id,p.revision])})));const fingerprint=Array.from(new Uint8Array(fingerprintBytes),b=>b.toString(16).padStart(2,"0")).join("");
+   const describeModel=(id:string)=>{const profile=profiles.find(p=>p.id===id);if(!profile)return id;const data=JSON.parse(profile.data) as Profile;return `${data.name} · ${data.model}`};
+   if(!row.demo)await pruneGenerationStages(user);const result=row.demo?demoTurn(story,args.input,args.mode,args.requestId):await runTurn({story,history:ancestry(turns,parentId),input:args.input,mode:args.mode,directorId:row.director_id,turnId:args.requestId,call,cache:generationStageCache(args.requestId,row.id,user,fingerprint),describeModel,regenerate:args.regenerate,progress:message=>send("progress",{message})});
    const turn:Turn={id:args.requestId,parentId,input:args.input,mode:args.mode,createdAt:new Date().toISOString(),demo:!!row.demo,...result,trace:{...result.trace,presets:[...appliedPresets.values()]},snapshot:storySchema.parse(result.snapshot)};
    await commitTurn(row,turn);send("done",await getWorkspace(user,row.id));
   }catch(e){send("error",{error:e instanceof AppError?e.message:"本轮生成未完成，请刷新确认进度后重试。"});}

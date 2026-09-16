@@ -13,8 +13,15 @@ export const cardMemoryUpdateSchema = z.object({
   if (JSON.stringify(value).length > 10000) ctx.addIssue({code:"custom", message:"记忆超过 10,000 字符，请合并压缩。"});
 });
 export type CardMemoryUpdate = z.infer<typeof cardMemoryUpdateSchema>;
+export const cardMemoryDeltaSchema = z.object({
+  summaryAppend:z.string().min(1).max(1000),
+  factsAdd:z.array(z.string().min(1).max(400)).max(10), factsRemove:z.array(z.string().min(1).max(400)).max(10),
+  beliefsAdd:z.array(z.string().min(1).max(400)).max(8), beliefsRemove:z.array(z.string().min(1).max(400)).max(8),
+  openThreadsAdd:z.array(z.string().min(1).max(400)).max(8), openThreadsResolve:z.array(z.string().min(1).max(400)).max(8),
+}).strict();
+export type CardMemoryDelta = z.infer<typeof cardMemoryDeltaSchema>;
 const savedMemorySchema = z.object({
-  version:z.literal(1), updatedTurnId:z.string(), mode:z.enum(["model","demo"]),
+  version:z.union([z.literal(1),z.literal(2)]), updatedTurnId:z.string(), mode:z.enum(["model","demo"]), revision:z.number().int().nonnegative().optional(),
   currentState:z.object({location:z.string(),clothing:z.string(),condition:z.string(),emotion:z.string(),thought:z.string(),goal:z.string(),relationship:z.string()}).strict(),
   ...cardMemoryUpdateSchema.innerType().shape,
 }).strict();
@@ -39,7 +46,7 @@ export function readCardMemory(card:CharacterCard) {
 }
 export function writeCardMemory(card:CharacterCard,update:CardMemoryUpdate,state:Character["state"],turnId:string,mode:"model"|"demo"):CharacterCard {
   const parsed=parseCharacterCard(card.source);readCardMemory(card);
-  const memory={...cardMemoryUpdateSchema.parse(update),version:1 as const,updatedTurnId:turnId,mode,currentState:{...state}};
+  const previous=readCardMemory(card);const memory={...cardMemoryUpdateSchema.parse(update),version:2 as const,revision:(previous?.revision||0)+1,updatedTurnId:turnId,mode,currentState:{...state}};
   const path=memoryPath(parsed);let source:string;
   if(card.format==="json"){
     let target=parsed;for(const key of path.slice(0,-1)){if(!Object.hasOwn(target,key))target[key]={};target=target[key] as Record<string,unknown>;}target[path.at(-1)!]=memory;source=JSON.stringify(parsed,null,2);
@@ -50,6 +57,18 @@ export function writeCardMemory(card:CharacterCard,update:CardMemoryUpdate,state
   parseCharacterCard(source);
   return {...card,source};
 }
+function normalized(value:string){return value.trim().replace(/\s+/g," ")}
+function mergeList(existing:string[],add:string[],remove:string[],limit:number){
+  const removed=new Set(remove.map(normalized));const result=existing.filter(item=>!removed.has(normalized(item)));
+  const seen=new Set(result.map(normalized));for(const item of add){const key=normalized(item);if(key&&!seen.has(key)){seen.add(key);result.push(item.trim())}}
+  return result.slice(-limit);
+}
+export function mergeCardMemory(previous:ReturnType<typeof readCardMemory>,delta:CardMemoryDelta):CardMemoryUpdate {
+  const base=previous||{summary:"",facts:[],beliefs:[],openThreads:[]};
+  const summary=[base.summary,delta.summaryAppend.trim()].filter(Boolean).join("\n");
+  return cardMemoryUpdateSchema.parse({summary:summary.length<=4000?summary:summary.slice(-4000),facts:mergeList(base.facts,delta.factsAdd,delta.factsRemove,24),beliefs:mergeList(base.beliefs,delta.beliefsAdd,delta.beliefsRemove,12),openThreads:mergeList(base.openThreads,delta.openThreadsAdd,delta.openThreadsResolve,12)});
+}
+export function writeCardMemoryDelta(card:CharacterCard,delta:CardMemoryDelta,state:Character["state"],turnId:string,mode:"model"|"demo"){return writeCardMemory(card,mergeCardMemory(readCardMemory(card),cardMemoryDeltaSchema.parse(delta)),state,turnId,mode)}
 export function clearCardMemory(card:CharacterCard):CharacterCard {
   const parsed=parseCharacterCard(card.source);readCardMemory(card);const path=memoryPath(parsed);let source:string;
   if(card.format==="json"){

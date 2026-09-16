@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 export type PresetContext = {
-  stage: "director" | "actor" | "narrator";
+  stage: "director" | "actor" | "settlement" | "narrator" | "memory";
   characterId?: string;
   trigger: "normal" | "regenerate";
   macros: Record<string, string>;
@@ -123,6 +123,15 @@ export function presetWarnings(preset: Preset): string[] {
   if (preset.entries.some(e => e.enabled && e.position === 1)) warnings.push("深度按平台提供给该 AI 的可见历史计算，不等于酒馆的完整聊天记录。");
   return [...new Set(warnings)];
 }
+const minimumOutputTokens:Record<PresetContext["stage"],number>={director:1200,actor:1200,settlement:2400,narrator:3500,memory:1800};
+export function presetStageWarnings(preset:Preset,stage:PresetContext["stage"]):string[]{
+ const warnings:string[]=[];const active=preset.entries.filter(e=>e.enabled&&!e.marker).map(e=>e.content).join("\n");
+ if(stage!=="narrator"&&/(不要|无需|禁止).{0,8}(JSON|结构|格式)|只.{0,8}(正文|自然语言)/i.test(active))warnings.push(`此预设可能要求非结构化输出，与${stage==="actor"?"角色":stage==="director"?"导演":stage==="settlement"?"裁决":"记忆"}阶段的 JSON 契约冲突。`);
+ if(stage==="narrator"&&/(仅返回|输出).{0,8}JSON/i.test(active))warnings.push("此预设额外要求 JSON；平台会在外层约束旁白结构，重复格式指令可能降低稳定性。");
+ const max=preset.sampling.maxTokens;if(max!==undefined&&max<minimumOutputTokens[stage])warnings.push(`最大输出 Token 为 ${max}，低于此阶段建议值 ${minimumOutputTokens[stage]}，长内容可能被截断。`);
+ if((stage==="actor"||stage==="memory")&&preset.entries.some(e=>e.enabled&&e.marker&&["charDescription","charPersonality"].includes(e.identifier)))warnings.push("角色设定也会由平台核心上下文提供；重复注入完整角色卡会增加 Token，并可能过度强化设定。");
+ return warnings;
+}
 export function summarizePreset(p: Preset): PresetSummary {
   return {id: p.id, name: p.name, revision: p.revision, count: p.entries.length, enabled: p.entries.filter(e => e.enabled).length, warnings: presetWarnings(p)};
 }
@@ -224,7 +233,7 @@ export function compilePreset(preset: Preset, context: PresetContext) {
   if (!historyInserted && injections.length) messages.push(...expandedHistory);
   const characters = messages.reduce((sum, m) => sum + m.content.length, 0);
   if (characters > 200000) throw new PresetError("组装的预设超过 200,000 字符，请关闭部分条目。");
-  return {messages, sampling: preset.sampling, warnings: [...new Set([...presetWarnings(preset), ...renderer.warnings, ...missingMarkers])], characters};
+  return {messages, sampling: preset.sampling, warnings: [...new Set([...presetWarnings(preset),...presetStageWarnings(preset,context.stage), ...renderer.warnings, ...missingMarkers])], characters};
 }
 
 export function exportPreset(p: Preset) {

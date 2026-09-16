@@ -13,7 +13,9 @@
 - 新故事默认没有角色；角色库可长期保存角色模板，并按需导入不同故事。每次导入都会生成独立副本，不携带其他故事的记忆。
 - OpenAI Chat Completions、OpenAI 兼容协议、Anthropic Messages、Google Gemini GenerateContent 四种适配；模型 ID 自行填写，不锁定易过时的模型列表。
 - 主 AI 与角色分别分配模型；连接测试；服务端 AES-GCM 加密保存 API 密钥；前端仅获取 `hasKey`。
+- 导演、事件裁决、旁白、记忆整理可分别选择模型；角色继续支持逐个选择模型。剧情版本中保留每阶段的模型、耗时、重试次数和上下文估算。
 - 导演分发信息 → 角色独立回应 → 协调事件及客观状态 → 生成有限视角旁白 → 数据库整体保存。
+- 已校验的生成阶段暂存 24 小时；同一次失败请求重试时复用已完成阶段，成功保存后自动清理，避免重复调用。
 - 导演指令与故事内行动分开；默认不替玩家说话、决定或推断内心。
 - 演示模式明确标记为固定规则，不调用模型，不具备自由续写能力。真实模式失败不会回退到演示。
 - 每回合完整快照、记忆来源、祖先路径筛选、回退、分支及重新生成。
@@ -31,6 +33,7 @@ npm run build
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_left_the_anarchist.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_next_magus.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0002_whole_dexter_bennett.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0003_smiling_enchantress.sql
 npm run dev
 ```
 
@@ -59,11 +62,12 @@ npm run dev
 
 - 左下角“预设管理”支持新建、复制、导入和导出 SillyTavern Chat Completion JSON 预设，编辑提示词内容、开关、顺序、消息角色、历史注入深度与生成参数。多顺序组文件需选择一组导入；不支持的宏和扩展会在“兼容提示”列出。
 - 在预设管理顶部为导演、角色默认值和旁白分别选择已保存的预设；角色编辑页可覆盖默认值或选择不使用预设。保存后下一次生成读取最新版本，正在进行的回合与旧正文不会重写。
+- 导演、角色、事件裁决、旁白和记忆整理均可独立选择预设；“请求预览”会展示宏展开后的消息顺序、字符／Token 粗略估算，并提示输出格式冲突与过小的输出额度。
 - 点击角色列表旁的“添加角色”，或角色档案右上角的编辑按钮，在“角色卡”区域导入 `.yaml`、`.yml` 或 `.json`。支持顶层 `name` 的自定义结构，以及含 `data.name` 的 Character Card V2 / V3 JSON；目前不支持 PNG 内嵌卡片。
 - 嵌套对象、列表、数字、多行文本和未知字段完整保留，原文包括注释一并保存。角色卡最多 60,000 字符、文件最多 256 KB；格式错误会阻止保存。重复键、别名和过深嵌套会被拒绝。
 - 在“角色卡原文”中直接编辑，格式即时校验，名称随 `name` 更新；点击“保存角色”后，后续回合使用新卡片。卡片作为该角色的完整背景进入模型上下文，当前位置、服饰等剧情状态在下方单独修改。编辑不清空角色记忆，历史快照保留当时的卡片版本。
 - 角色卡也是长期记忆载体：每次生成，导演和裁决器收到按角色标识的最新完整卡片，角色模型只收到自己的卡片。回合结束后，主 AI 为有回应、感知事件或状态变化的角色分别总结记忆，写入卡片的 `mytavern_memory` 区；标准 V2 / V3 卡使用 `data.extensions.mytavern_memory`。没有卡片的角色会自动建立 YAML 卡片。
-- 记忆区包含累积摘要、已知事实、个人判断、待办线索、当前状态、更新回合和模型／演示标记。主 AI 更新时仅接收该角色自己的卡片、获准感知的信息、裁决事件和主观判断，不接入可能带有全局历史的预设。原始背景字段保留，YAML 注释保留，但自动保存可能调整排版。
+- 记忆区包含累积摘要、已知事实、个人判断、待办线索、当前状态、更新回合和模型／演示标记。记忆模型只返回本轮增量，服务端负责合并新增、修订和已完成线索；原始经历同时记录来源类型、事件序号、关联角色和失效关系。
 - 记忆总结每次输出最多 10,000 字符；模型需合并旧经历、去重并保留重要事实。总结或卡片校验失败时整轮不保存，格式错误会重试一次。卡片与正文、状态一起原子提交，回退／重生成会恢复对应版本；导出卡片携带记忆，重新导入后无需原来的经历列表也能提供累积记忆。
 - 打开角色档案的“幕后信息”可查看“角色卡记忆”。演示模式仅追加有限规则记录，不调用主模型、不进行智能总结；真实模式会显示“主 AI 正在更新角色卡记忆”的进度。
 - “导出角色卡”下载当前原文；应用中的编辑不会自动改写电脑上的原始文件。预设与角色卡均按当前登录用户保存到本地 / 部署环境各自的数据库。

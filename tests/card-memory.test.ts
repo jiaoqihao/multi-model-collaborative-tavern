@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { sampleStory } from "../lib/tavern/seed";
 import { runTurn, demoTurn, actorContext, type CallModel } from "../lib/tavern/engine";
-import { clearCardMemory, parseCharacterCard, readCardMemory, writeCardMemory, characterCard, type CardMemoryUpdate } from "../lib/tavern/cards";
+import { clearCardMemory, parseCharacterCard, readCardMemory, writeCardMemory, writeCardMemoryDelta, characterCard, type CardMemoryUpdate } from "../lib/tavern/cards";
 import { storySchema } from "../lib/tavern/validation";
 const update:CardMemoryUpdate={summary:"记得旧约定，也得知新的暗号。",facts:["玩家告知暗号是月光"],beliefs:["觉得玩家可信"],openThreads:["明晚赴约"]};
 function model(log:{id:string;system:string;data:Record<string,unknown>;context:unknown}[],memoryText=JSON.stringify(update)):CallModel {
@@ -25,7 +25,7 @@ test("主模型自动更新角色卡；下一回合角色与主模型读取新�
  assert.deepEqual(story,before);const card=result.snapshot.characters[0].card!;const memory=readCardMemory(card)!;
  assert.equal(memory.summary,update.summary);assert.equal(memory.updatedTurnId,"turn1");assert.equal(memory.mode,"model");assert.equal(memory.currentState.location,"柜台后");assert.ok(card.source.includes("# preserve comment"));assert.deepEqual(parseCharacterCard(card.source).custom,{list:[1,2]});
  assert.deepEqual(result.snapshot.characters[2].card,idle.card);
- const writers=calls.filter(c=>c.system.includes("你负责更新角色卡记忆"));assert.equal(writers.length,2);assert.ok(writers.every(c=>c.id==="master"&&c.context===undefined));
+ const writers=calls.filter(c=>c.system.includes("你负责更新角色卡记忆"));assert.equal(writers.length,2);assert.ok(writers.every(c=>c.id==="master"&&(c.context as {stage?:string})?.stage==="memory"));
  const lin=JSON.stringify(writers.find(c=>c.data.characterId==="lin")!.data);assert.ok(lin.includes("OWN_BELIEF"));assert.ok(!lin.includes("OTHER_PRIVATE_EVENT"));assert.ok(!lin.includes("OTHER_CARD_SECRET"));assert.ok(!lin.includes("BACKSTAGE_DIRECTIVE"));assert.ok(!lin.includes("PRIVATE_USER_INPUT"));
  const shen=JSON.stringify(writers.find(c=>c.data.characterId==="shen")!.data);assert.ok(!shen.includes("月光"));assert.ok(!shen.includes("OWN_BELIEF"));
  assert.ok(!JSON.stringify(calls.find(c=>c.system.includes("你是叙事编辑"))!.data).includes("OTHER_CARD_SECRET"));
@@ -60,4 +60,9 @@ test("演示卡片可独立携带记忆，分支重新生成从父快照建立�
 test("角色库副本可清除卡片内嵌记忆并保留原设定",()=>{
  const base={format:"yaml" as const,filename:"library.yaml",source:"# keep\nname: 林晚\ncustom: true\n"};const remembered=writeCardMemory(base,update,sampleStory().characters[0].state,"t1","model");const clean=clearCardMemory(remembered);
  assert.equal(readCardMemory(clean),undefined);assert.ok(clean.source.includes("# keep"));assert.equal(parseCharacterCard(clean.source).custom,true);
+});
+test("增量记忆只追加变化，并可撤销旧事实与完成线索",()=>{
+ const base={format:"yaml" as const,filename:"delta.yaml",source:"name: 测试\n"};const first=writeCardMemory(base,update,sampleStory().characters[0].state,"t1","model");
+ const next=writeCardMemoryDelta(first,{summaryAppend:"后来确认暗号已更换。",factsAdd:["新暗号是星火"],factsRemove:["玩家告知暗号是月光"],beliefsAdd:[],beliefsRemove:[],openThreadsAdd:[],openThreadsResolve:["明晚赴约"]},sampleStory().characters[0].state,"t2","model");
+ const memory=readCardMemory(next)!;assert.match(memory.summary,/后来确认/);assert.deepEqual(memory.facts,["新暗号是星火"]);assert.deepEqual(memory.openThreads,[]);assert.equal(memory.version,2);assert.equal(memory.revision,2);
 });

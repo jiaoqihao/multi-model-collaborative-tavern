@@ -41,6 +41,17 @@ test("演示私聊只改变接收人，新快照不会改变原始状态",()=>{
  const story=sampleStory();const result=demoTurn(story,"低声告诉林晚一个秘密","roleplay","t1");assert.deepEqual(result.trace.selected,["lin"]);assert.equal(story.characters[0].memories.length,0);assert.equal(result.snapshot.characters[1].memories.length,0);
 });
 test("新故事默认没有任何角色，演示模式也可继续纯旁白",()=>{const story=initialStory();assert.deepEqual(story.characters,[]);const result=demoTurn(story,"走进空旷的房间","roleplay","empty");assert.deepEqual(result.trace.selected,[]);assert.equal(result.snapshot.characters.length,0)});
+test("各生成阶段使用独立模型，并记录可审计的运行信息",async()=>{
+ const story=initialStory();story.stageModels={settlement:"judge",narrator:"writer",memory:"archivist"};const ids:string[]=[];
+ const result=await runTurn({story,history:[],input:"推开门",mode:"roleplay",directorId:"director",turnId:"stages",describeModel:id=>`配置 ${id}`,call:async(id,system)=>{ids.push(id);if(system.includes("信息分发"))return '{"deliveries":[]}';if(system.includes("协调实际事件"))return '{"events":[{"description":"门被推开。","visibleTo":[],"visibleToPlayer":true}],"changes":[]}';return '{"narrative":"门缓缓打开。"}'}});
+ assert.deepEqual(ids,["director","judge","writer"]);assert.deepEqual(result.trace.stages?.map(s=>s.modelId),ids);assert.ok(result.trace.stages?.every(s=>s.modelLabel.startsWith("配置 ")&&s.attempts===1));
+});
+test("阶段缓存会跳过已经成功的模型调用",async()=>{
+ const story=initialStory();const saved=new Map<string,unknown>();let calls=0;const cache={load:async(key:string)=>saved.get(key),save:async(key:string,value:unknown)=>{saved.set(key,value)}};
+ const call=async(_id:string,system:string)=>{calls++;if(system.includes("信息分发"))return '{"deliveries":[]}';if(system.includes("协调实际事件"))return '{"events":[{"description":"雨落下来。","visibleTo":[],"visibleToPlayer":true}],"changes":[]}';return '{"narrative":"雨落下来。"}'};
+ await runTurn({story,history:[],input:"看雨",mode:"roleplay",directorId:"m",turnId:"cache-a",call,cache});assert.equal(calls,3);
+ const second=await runTurn({story,history:[],input:"看雨",mode:"roleplay",directorId:"m",turnId:"cache-a",call,cache});assert.equal(calls,3);assert.ok(second.trace.stages?.every(s=>s.cached));
+});
 test("API 密钥加密可恢复，错误密钥不能解密",async()=>{
  const secret="a".repeat(64);const encrypted=await cryptKey("sk-test-not-real",secret);assert.ok(!encrypted.includes("sk-test"));assert.equal(await cryptKey(encrypted,secret,true),"sk-test-not-real");await assert.rejects(cryptKey(encrypted,"b".repeat(64),true));
 });

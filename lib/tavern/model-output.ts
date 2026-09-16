@@ -48,6 +48,7 @@ export function outputContract(schema: z.ZodTypeAny): unknown {
   if (schema instanceof z.ZodOptional) return {optional: true, value: outputContract(schema.unwrap())};
   if (schema instanceof z.ZodObject) return Object.fromEntries(Object.entries(schema.shape).map(([key, value]) => [key, outputContract(value as z.ZodTypeAny)]));
   if (schema instanceof z.ZodArray) return {type: "array", items: outputContract(schema.element), minItems: schema._def.minLength?.value, maxItems: schema._def.maxLength?.value};
+  if (schema instanceof z.ZodUnion) return {anyOf: schema.options.map((option:z.ZodTypeAny)=>outputContract(option))};
   if (schema instanceof z.ZodString) return {type: "string", minLength: schema.minLength ?? undefined, maxLength: schema.maxLength ?? undefined};
   if (schema instanceof z.ZodBoolean) return {type: "boolean"};
   return {type: schema._def.typeName};

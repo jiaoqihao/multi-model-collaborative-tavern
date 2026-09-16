@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core";
 export const stories = sqliteTable("stories", {
  id:text("id").primaryKey(), owner:text("owner").notNull(), title:text("title").notNull(),
  data:text("data").notNull(), root:text("root").notNull(), headId:text("head_id"),
@@ -15,3 +15,7 @@ export const characterLibrary = sqliteTable("character_library", {
  id:text("id").primaryKey(), owner:text("owner").notNull(), data:text("data").notNull(),
  revision:integer("revision").notNull().default(1), createdAt:text("created_at").notNull(), updatedAt:text("updated_at").notNull()
 },t=>[index("idx_character_library_owner_updated").on(t.owner,t.updatedAt)]);
+export const generationStages = sqliteTable("generation_stages", {
+ requestId:text("request_id").notNull(), stageKey:text("stage_key").notNull(), storyId:text("story_id").notNull().references(()=>stories.id),
+ owner:text("owner").notNull(), fingerprint:text("fingerprint").notNull(), data:text("data").notNull(), updatedAt:text("updated_at").notNull()
+},t=>[primaryKey({columns:[t.requestId,t.stageKey]}),index("idx_generation_stages_story_owner").on(t.storyId,t.owner)]);
