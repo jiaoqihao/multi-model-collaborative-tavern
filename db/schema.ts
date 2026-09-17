@@ -19,3 +19,15 @@ export const generationStages = sqliteTable("generation_stages", {
  requestId:text("request_id").notNull(), stageKey:text("stage_key").notNull(), storyId:text("story_id").notNull().references(()=>stories.id),
  owner:text("owner").notNull(), fingerprint:text("fingerprint").notNull(), data:text("data").notNull(), updatedAt:text("updated_at").notNull()
 },t=>[primaryKey({columns:[t.requestId,t.stageKey]}),index("idx_generation_stages_story_owner").on(t.storyId,t.owner)]);
+export const storyEvents = sqliteTable("story_events", {
+ id:text("id").primaryKey(), storyId:text("story_id").notNull().references(()=>stories.id), turnId:text("turn_id").notNull().references(()=>turns.id),
+ eventIndex:integer("event_index").notNull(), description:text("description").notNull(), visibleTo:text("visible_to").notNull(), visibleToPlayer:integer("visible_to_player").notNull(), createdAt:text("created_at").notNull()
+},t=>[index("idx_story_events_story_turn").on(t.storyId,t.turnId),index("idx_story_events_turn_index").on(t.turnId,t.eventIndex)]);
+export const storySummaryRecords = sqliteTable("story_summary_records", {
+ id:text("id").primaryKey(), storyId:text("story_id").notNull().references(()=>stories.id), turnId:text("turn_id").notNull().references(()=>turns.id),
+ level:text("level").notNull(), content:text("content").notNull(), sourceTurnIds:text("source_turn_ids").notNull(), createdAt:text("created_at").notNull()
+},t=>[index("idx_story_summaries_story_turn").on(t.storyId,t.turnId)]);
+export const storyThreadRecords = sqliteTable("story_thread_records", {
+ id:text("id").primaryKey(), threadId:text("thread_id").notNull(), storyId:text("story_id").notNull().references(()=>stories.id), turnId:text("turn_id").notNull().references(()=>turns.id),
+ description:text("description").notNull(), characterIds:text("character_ids").notNull(), status:text("status").notNull(), sourceEventIndex:integer("source_event_index"), createdAt:text("created_at").notNull()
+},t=>[index("idx_story_threads_story_turn").on(t.storyId,t.turnId),index("idx_story_threads_thread").on(t.threadId)]);

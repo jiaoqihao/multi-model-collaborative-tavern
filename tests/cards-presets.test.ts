@@ -13,7 +13,7 @@ test("角色卡保留嵌套对象、列表、数字、多行文本及原文，�
  assert.deepEqual(actorContext(saved.characters[0],"","").character.card,parsed);
  saved.characters[0].card!.source=source.replace("age: 29","age: 30");assert.equal(actorContext(saved.characters[0],"","").character.card?.age,30);
  assert.ok(!JSON.stringify(actorContext(saved.characters[1],"","")).includes("custom.yaml"));assert.equal(actorContext(saved.characters[1],"","").character.card.custom,undefined);
- const context=buildPresetContext("actor",saved,[],"",saved.characters[0]);assert.ok(context.macros.description.includes('"age":30'));
+ const context=buildPresetContext("actor",saved,[],"",saved.characters[0]);assert.ok(!context.macros.description.includes('"age":30'));assert.equal(actorContext(saved.characters[0],"","").character.card.age,30);
  assert.ok(!JSON.stringify(buildPresetContext("narrator",saved,[],"")).includes('"age":30'));
 });
 test("角色卡拒绝错误 YAML、重复键、别名、过深嵌套和超长输入",()=>{

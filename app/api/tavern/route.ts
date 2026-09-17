@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AppError, ancestry, characterSchema, profileSchema, storySchema, turnSchema } from "@/lib/tavern/validation";
 import { allTurns, characterLibraryRows, commitTurn, createStory, db, encryptionSecret, generationStageCache, getStory, getWorkspace, owner, profileRows, presetRows, pruneGenerationStages, requireOrigin } from "@/lib/tavern/store";
 import { complete, cryptKey, validateEndpoint } from "@/lib/tavern/models";
+import { isolateCreativeMessages, PROTOCOL_VERSION } from "@/lib/tavern/protocols";
 import { demoTurn, runTurn } from "@/lib/tavern/engine";
 import type { Profile, StoryState, Turn } from "@/lib/tavern/types";
 import { compilePreset, PresetError } from "@/lib/tavern/presets";
@@ -109,20 +110,21 @@ export async function POST(request:Request){try{
    const presetId=context.stage==="actor"&&override!==undefined&&override!=="inherit"?override:story.presetSelection?.[context.stage];
    if(presetId){
     const preset=presets.find(p=>p.id===presetId);if(!preset)throw new AppError("本回合引用的预设不存在，请重新分配预设。");
-    try{options={...compilePreset(preset,context),structured:true}}catch(error){if(error instanceof PresetError)throw new AppError(error.message);throw error;}
+    try{const compiled=compilePreset(preset,context);const messages=isolateCreativeMessages(compiled.messages,context.stage);options={...compiled,messages,characters:messages.reduce((sum,message)=>sum+message.content.length,0),structured:true}}catch(error){if(error instanceof PresetError)throw new AppError(error.message);throw error;}
     const provider=(JSON.parse(row.data) as Profile).provider;
     if(provider==="anthropic"||provider==="gemini")options.warnings.push("此服务商将 system 条目合并为系统指令，无法保留它们与对话交错的位置。frequency/presence penalty 未应用。");
     if(provider==="anthropic")options.warnings.push("Claude 适配的 temperature 上限为 1；与 top_p 同时配置时仅发送 temperature。");
     appliedPresets.set(context.stage+":"+(context.characterId||""),{stage:context.stage+(context.characterId?":"+context.characterId:""),name:preset.name,revision:preset.revision,warnings:options.warnings,characters:options.characters});
    }
   }
-  const text=await complete(JSON.parse(row.data) as Profile,keys.get(id)!,system,prompt,options||{messages:[],sampling:{},structured:true});return {text,contextCharacters:options?.characters||0};
+  const modelOptions=options?{messages:options.messages,sampling:options.sampling,structured:true}:{messages:[],sampling:{},structured:true};
+  const text=await complete(JSON.parse(row.data) as Profile,keys.get(id)!,system,prompt,modelOptions);return {text,contextCharacters:options?.characters||0};
  };
  const stream=new ReadableStream({async start(controller){
   const encoder=new TextEncoder();let open=true;const send=(event:string,data:unknown)=>{if(open)try{controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));}catch{open=false;}};
   try{
    send("progress",{message:row.demo?"正在生成规则演示…":"开始本轮创作…"});
-   const fingerprintBytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify({storyId:row.id,revision:row.revision,parentId,input:args.input,mode:args.mode,regenerate:!!args.regenerate,profiles:profiles.map(p=>[p.id,p.data]),presets:presets.map(p=>[p.id,p.revision])})));const fingerprint=Array.from(new Uint8Array(fingerprintBytes),b=>b.toString(16).padStart(2,"0")).join("");
+   const fingerprintBytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify({protocolVersion:PROTOCOL_VERSION,storyId:row.id,revision:row.revision,parentId,input:args.input,mode:args.mode,regenerate:!!args.regenerate,profiles:profiles.map(p=>[p.id,p.data]),presets:presets.map(p=>[p.id,p.revision])})));const fingerprint=Array.from(new Uint8Array(fingerprintBytes),b=>b.toString(16).padStart(2,"0")).join("");
    const describeModel=(id:string)=>{const profile=profiles.find(p=>p.id===id);if(!profile)return id;const data=JSON.parse(profile.data) as Profile;return `${data.name} · ${data.model}`};
    if(!row.demo)await pruneGenerationStages(user);const result=row.demo?demoTurn(story,args.input,args.mode,args.requestId):await runTurn({story,history:ancestry(turns,parentId),input:args.input,mode:args.mode,directorId:row.director_id,turnId:args.requestId,call,cache:generationStageCache(args.requestId,row.id,user,fingerprint),describeModel,regenerate:args.regenerate,progress:message=>send("progress",{message})});
    const turn:Turn={id:args.requestId,parentId,input:args.input,mode:args.mode,createdAt:new Date().toISOString(),demo:!!row.demo,...result,trace:{...result.trace,presets:[...appliedPresets.values()]},snapshot:storySchema.parse(result.snapshot)};

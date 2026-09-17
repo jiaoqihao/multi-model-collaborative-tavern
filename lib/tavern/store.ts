@@ -29,9 +29,13 @@ export async function getWorkspace(user:string,id?:string):Promise<Workspace>{
  return {id:row.id,stories:listing,revision:row.revision,story:storySchema.parse(JSON.parse(row.data)),headId:row.head_id,turns:(await allTurns(row.id)).map(t=>({...t,snapshot:storySchema.parse(t.snapshot)})),profiles,presets:(await presetRows(user)).map(summarizePreset),characterLibrary:await characterLibraryRows(user),directorId:row.director_id,demo:!!row.demo};
 }
 export async function commitTurn(row:StoryRow,turn:Turn){
+ const eventStatements=(turn.trace.eventRecords||[]).map((event,eventIndex)=>db().prepare("INSERT INTO story_events (id,story_id,turn_id,event_index,description,visible_to,visible_to_player,created_at) VALUES (?,?,?,?,?,?,?,?)").bind(`${turn.id}:event:${eventIndex}`,row.id,turn.id,eventIndex,event.description,JSON.stringify(event.visibleTo),event.visibleToPlayer?1:0,turn.createdAt));
+ const summaries=turn.trace.summaryRecords||(turn.trace.sceneSummary?[turn.trace.sceneSummary]:[]);const summaryStatements=summaries.map(summary=>db().prepare("INSERT INTO story_summary_records (id,story_id,turn_id,level,content,source_turn_ids,created_at) VALUES (?,?,?,?,?,?,?)").bind(summary.id,row.id,turn.id,summary.level,summary.content,JSON.stringify(summary.sourceTurnIds),turn.createdAt));
+ const threadStatements=(turn.trace.threadChanges||[]).map((thread,index)=>db().prepare("INSERT INTO story_thread_records (id,thread_id,story_id,turn_id,description,character_ids,status,source_event_index,created_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(`${turn.id}:thread:${index}`,thread.id,row.id,turn.id,thread.description,JSON.stringify(thread.characterIds),thread.status,thread.sourceEventIndex??null,turn.createdAt));
  const result=await db().batch([
   db().prepare("INSERT INTO turns (id,story_id,parent_id,data,created_at) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM stories WHERE id = ? AND owner = ? AND revision = ?)").bind(turn.id,row.id,turn.parentId,JSON.stringify(turn),turn.createdAt,row.id,row.owner,row.revision),
   db().prepare("UPDATE stories SET data = ?, title = ?, head_id = ?, revision = revision + 1 WHERE id = ? AND owner = ? AND revision = ?").bind(JSON.stringify(turn.snapshot),turn.snapshot.title,turn.id,row.id,row.owner,row.revision),
+  ...eventStatements,...summaryStatements,...threadStatements,
   db().prepare("DELETE FROM generation_stages WHERE request_id=? AND story_id=? AND owner=?").bind(turn.id,row.id,row.owner)
  ]);
  if(!result[0].meta.changes)throw new AppError("故事已在另一处修改，请刷新后重试；本次生成没有覆盖新进度。",409);

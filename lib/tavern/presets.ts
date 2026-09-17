@@ -8,6 +8,7 @@ export type PresetContext = {
   macros: Record<string, string>;
   markers: Record<string, string>;
   history: ChatMessage[];
+  diagnostics?: {budgetTokens:number;usedTokens:number;selectedMemories:number;omittedMemories:number;historyItems:number};
 };
 export const samplingSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),

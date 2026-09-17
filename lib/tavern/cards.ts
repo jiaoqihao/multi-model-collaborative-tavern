@@ -63,10 +63,16 @@ function mergeList(existing:string[],add:string[],remove:string[],limit:number){
   const seen=new Set(result.map(normalized));for(const item of add){const key=normalized(item);if(key&&!seen.has(key)){seen.add(key);result.push(item.trim())}}
   return result.slice(-limit);
 }
+function compactSummary(existing:string,append:string){
+ const lines=[...new Set([existing,append].flatMap(text=>text.split(/\r?\n/)).map(normalized).filter(Boolean))];const joined=lines.join("\n");if(joined.length<=4000)return joined;
+ const important=lines.filter(line=>/约定|承诺|秘密|身份|关系|目标|线索|失踪|死亡|受伤|归还|欠|必须|不能/.test(line));
+ const early=lines.slice(0,Math.min(8,lines.length));const recent=lines.slice(-18);const selected=[...new Set([...important,...early,...recent])];
+ const output:string[]=[];let size=0;for(const line of selected){if(size+line.length+1>3950)continue;output.push(line);size+=line.length+1;}
+ return `[分层摘要：保留早期关键经历、长期约定与近期变化]\n${output.join("\n")}`.slice(0,4000);
+}
 export function mergeCardMemory(previous:ReturnType<typeof readCardMemory>,delta:CardMemoryDelta):CardMemoryUpdate {
   const base=previous||{summary:"",facts:[],beliefs:[],openThreads:[]};
-  const summary=[base.summary,delta.summaryAppend.trim()].filter(Boolean).join("\n");
-  return cardMemoryUpdateSchema.parse({summary:summary.length<=4000?summary:summary.slice(-4000),facts:mergeList(base.facts,delta.factsAdd,delta.factsRemove,24),beliefs:mergeList(base.beliefs,delta.beliefsAdd,delta.beliefsRemove,12),openThreads:mergeList(base.openThreads,delta.openThreadsAdd,delta.openThreadsResolve,12)});
+  return cardMemoryUpdateSchema.parse({summary:compactSummary(base.summary,delta.summaryAppend.trim()),facts:mergeList(base.facts,delta.factsAdd,delta.factsRemove,24),beliefs:mergeList(base.beliefs,delta.beliefsAdd,delta.beliefsRemove,12),openThreads:mergeList(base.openThreads,delta.openThreadsAdd,delta.openThreadsResolve,12)});
 }
 export function writeCardMemoryDelta(card:CharacterCard,delta:CardMemoryDelta,state:Character["state"],turnId:string,mode:"model"|"demo"){return writeCardMemory(card,mergeCardMemory(readCardMemory(card),cardMemoryDeltaSchema.parse(delta)),state,turnId,mode)}
 export function clearCardMemory(card:CharacterCard):CharacterCard {
