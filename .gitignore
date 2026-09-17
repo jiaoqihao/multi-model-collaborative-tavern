@@ -47,3 +47,21 @@ next-env.d.ts
 /.tmp/
 *.tsbuildinfo
 !.env.example
+
+# private user data and exports
+/private/
+/imports/
+/exports/
+/character-cards/
+/role-cards/
+*.card.json
+*.card.yaml
+*.card.yml
+*.character.json
+*.character.yaml
+*.character.yml
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm

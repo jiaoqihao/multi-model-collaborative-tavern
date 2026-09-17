@@ -110,6 +110,20 @@ npm run test:integration
 
 `.openai/hosting.json` 保留当前 Site ID 与 `DB` 逻辑绑定。使用 Sites 发布流程将已验证的源代码和构建产物发布到私有站点。生产环境必须设置独立的 `TAVERN_ENCRYPTION_KEY` secret；不要复用本地值，不要提交 `.dev.vars`。
 
+## 隐私与 GitHub
+
+用户填写的 API 密钥、故事正文、角色库和导入角色卡只保存在当前环境的数据库中，不属于源码仓库。`.gitignore` 已排除本地密钥、Wrangler / D1 状态、数据库、常见角色卡文件名以及 `private`、`imports`、`exports`、`character-cards` 等目录。请不要把个人数据复制到源码或测试夹具中。
+
+每次推送前运行：
+
+```powershell
+npm run privacy:check -- --history
+```
+
+首次克隆后可运行 `npm run privacy:install-hook`，启用随仓库提供的 `pre-push` 钩子，使每次 `git push` 前自动执行检查。本机当前仓库已经启用。
+
+检查覆盖 Git 暂存区、已跟踪工作区和完整历史，只输出疑似问题所在的提交、文件名和规则，不回显密钥或角色卡正文。若真实密钥曾经进入提交，即使随后删除也应立即去服务商处撤销并重新生成，再清理 Git 历史；单纯新增 `.gitignore` 不能移除已有提交。
+
 密钥与故事正文不会写入应用日志。模型接口只允许公开 HTTPS 地址；原生协议限制官方域名，兼容接口不跟随重定向。单纯地址语法检查无法全面解决恶意 DNS 场景，若将来开放给不受信任的用户，需要进一步增加出口域名策略、配额和速率限制。
 
 协议依据：[OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)、[Gemini GenerateContent](https://ai.google.dev/api/generate-content)。
