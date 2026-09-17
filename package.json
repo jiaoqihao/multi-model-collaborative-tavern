@@ -18,6 +18,7 @@
     "test:integration": "node tests/integration.mjs",
     "test:features": "node scripts/test-features.mjs",
     "test:model-runtime": "node scripts/test-model-runtime.mjs",
+    "experiment:retrieval": "node scripts/experiment-retrieval.mjs",
     "privacy:check": "node scripts/privacy-check.mjs",
     "privacy:install-hook": "node scripts/install-privacy-hook.mjs"
   },

@@ -90,6 +90,8 @@ npm run dev
 
 ## 验证
 
+新增独立的[中文剧情混合检索试验](experiments/retrieval/README.md)：对照现有关键词检索、本地多语言向量检索和 RRF 混合检索，评估召回、排序、预算及角色／分支隔离。试验仅使用合成数据，尚未接入线上生成流程。
+
 ```powershell
 npm run typecheck
 npm run lint
