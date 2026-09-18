@@ -1,10 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { parseModelObject, outputIssue } from "../lib/tavern/model-output";
+import { parseModelObject, outputIssue, outputContract } from "../lib/tavern/model-output";
 import { runTurn } from "../lib/tavern/engine";
 import { initialStory, sampleStory } from "../lib/tavern/seed";
 import { complete, endpoints } from "../lib/tavern/models";
+
+test("输出协议展开默认字段、枚举与数字约束，线索不再只有 ZodDefault 标签",()=>{
+ const schema=z.object({threads:z.array(z.object({action:z.enum(["open","resolve"]),sourceEventIndex:z.number().int().nonnegative().optional()})).max(8).default([])});
+ assert.deepEqual(outputContract(schema),{threads:{optional:true,value:{type:"array",minItems:undefined,maxItems:8,items:{action:{type:"string",enum:["open","resolve"]},sourceEventIndex:{optional:true,value:{type:"integer",minimum:0,maximum:undefined}}}}}});
+});
 
 test("结构解析兼容代码围栏、说明文字及完整前置思考块，保留正文原样", () => {
   const value = {narrative: '她说："看这里 { }"。\n<think>是台词的一部分</think>', nested: [{text: "反斜杠\\"}]};

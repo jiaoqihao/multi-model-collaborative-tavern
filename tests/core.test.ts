@@ -32,7 +32,7 @@ test("结构无效只重试一次，失败不修改状态",async()=>{
  assert.equal(calls,2);assert.equal(JSON.stringify(story),before);
 });
 test("未知角色在调用角色模型之前被拒绝",async()=>{
- let count=0;await assert.rejects(runTurn({story:sampleStory(),history:[],input:"hi",mode:"roleplay",directorId:"m",turnId:"t",call:async()=>{count++;return '{"deliveries":[{"characterId":"intruder","visible":"x","direction":""}]}'}}),/不存在的角色/);assert.equal(count,1);
+ let count=0;await assert.rejects(runTurn({story:sampleStory(),history:[],input:"hi",mode:"roleplay",directorId:"m",turnId:"t",call:async()=>{count++;return '{"deliveries":[{"characterId":"intruder","visible":"x","direction":""}]}'}}),/characterId.*应为 lin 或 shen/);assert.equal(count,2);
 });
 test("分支上下文只包含祖先，循环与缺失节点被拒绝",()=>{
  const turns=[{id:"a",parentId:null},{id:"b",parentId:"a"},{id:"c",parentId:"a"}];assert.deepEqual(ancestry(turns,"c").map(t=>t.id),["a","c"]);assert.throws(()=>ancestry([{id:"a",parentId:"a"}],"a"),/循环/);assert.throws(()=>ancestry(turns,"missing"),/缺少/);

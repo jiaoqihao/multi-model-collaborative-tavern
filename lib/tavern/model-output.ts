@@ -45,12 +45,16 @@ export function parseModelObject(text: string): unknown {
 /** Compact output contract includes limits omitted by the prose examples. */
 export function outputContract(schema: z.ZodTypeAny): unknown {
   if (schema instanceof z.ZodEffects) return outputContract(schema.innerType());
+  if (schema instanceof z.ZodDefault) return {optional: true, value: outputContract(schema.removeDefault())};
+  if (schema instanceof z.ZodNever) return {enum: []};
   if (schema instanceof z.ZodOptional) return {optional: true, value: outputContract(schema.unwrap())};
   if (schema instanceof z.ZodObject) return Object.fromEntries(Object.entries(schema.shape).map(([key, value]) => [key, outputContract(value as z.ZodTypeAny)]));
   if (schema instanceof z.ZodArray) return {type: "array", items: outputContract(schema.element), minItems: schema._def.minLength?.value, maxItems: schema._def.maxLength?.value};
   if (schema instanceof z.ZodUnion) return {anyOf: schema.options.map((option:z.ZodTypeAny)=>outputContract(option))};
   if (schema instanceof z.ZodString) return {type: "string", minLength: schema.minLength ?? undefined, maxLength: schema.maxLength ?? undefined};
   if (schema instanceof z.ZodBoolean) return {type: "boolean"};
+  if (schema instanceof z.ZodEnum) return {type: "string", enum: schema.options};
+  if (schema instanceof z.ZodNumber) return {type: schema.isInt ? "integer" : "number", minimum: schema.minValue ?? undefined, maximum: schema.maxValue ?? undefined};
   return {type: schema._def.typeName};
 }
 
@@ -64,6 +68,7 @@ export function outputIssue(error: unknown): string {
     if (issue.code === "too_big") return `${path}：超过上限 ${issue.maximum}（${issue.type === "array" ? "项" : "字符"}），请精简`;
     if (issue.code === "too_small") return `${path}：至少需要 ${issue.minimum}（${issue.type === "array" ? "项" : "字符"}）`;
     if (issue.code === "unrecognized_keys") return `${path}：存在多余字段，只返回要求的字段`;
+    if (issue.code === "invalid_enum_value") return `${path}：应为 ${issue.options.join(" 或 ")}`;
     // Custom memory validation messages are application-authored, not model text.
     if (issue.code === "custom") return `${path}：${issue.message}`;
     return `${path}：字段格式不符合要求`;

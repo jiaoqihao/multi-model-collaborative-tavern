@@ -63,7 +63,7 @@ function mergeList(existing:string[],add:string[],remove:string[],limit:number){
   const seen=new Set(result.map(normalized));for(const item of add){const key=normalized(item);if(key&&!seen.has(key)){seen.add(key);result.push(item.trim())}}
   return result.slice(-limit);
 }
-function compactSummary(existing:string,append:string){
+export function compactSummary(existing:string,append:string){
  const lines=[...new Set([existing,append].flatMap(text=>text.split(/\r?\n/)).map(normalized).filter(Boolean))];const joined=lines.join("\n");if(joined.length<=4000)return joined;
  const important=lines.filter(line=>/约定|承诺|秘密|身份|关系|目标|线索|失踪|死亡|受伤|归还|欠|必须|不能/.test(line));
  const early=lines.slice(0,Math.min(8,lines.length));const recent=lines.slice(-18);const selected=[...new Set([...important,...early,...recent])];
