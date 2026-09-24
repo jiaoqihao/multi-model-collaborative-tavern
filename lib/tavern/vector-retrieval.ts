@@ -27,3 +27,21 @@ export function rankHybridMemories(character:Character,query:string,budgetTokens
  for(const memory of ordered){const cost=estimateContextTokens(memory.content)+24;if(usedTokens+cost>budgetTokens)continue;items.push(memory);usedTokens+=cost}
  return {items,usedVector,indexed,total:lexical.length,usedTokens};
 }
+
+export function rankHybridHits(character:Character,query:string,budgetTokens:number,semanticIds:readonly string[],indexedIds:readonly string[]){
+ const lexical=selectMemoryEvidence(character,query,Number.MAX_SAFE_INTEGER).items;
+ const known=new Set(lexical.map(memory=>memory.id));
+ const semantic=semanticIds.filter(id=>known.has(id));
+ const indexedSet=new Set(indexedIds);const indexed=lexical.filter(memory=>indexedSet.has(memory.id)).length;
+ const usedVector=semantic.length>0&&indexed/Math.max(1,lexical.length)>=0.75;
+ let ordered=lexical;
+ if(usedVector){
+  const scores=new Map<string,number>();
+  lexical.forEach((memory,index)=>scores.set(memory.id,1/(60+index+1)));
+  semantic.forEach((id,index)=>scores.set(id,(scores.get(id)||0)+1/(60+index+1)));
+  ordered=[...lexical].sort((a,b)=>(scores.get(b.id)||0)-(scores.get(a.id)||0));
+ }
+ const items:Memory[]=[];let usedTokens=0;
+ for(const memory of ordered){const cost=estimateContextTokens(memory.content)+24;if(usedTokens+cost>budgetTokens)continue;items.push(memory);usedTokens+=cost}
+ return {items,usedVector,indexed,total:lexical.length,usedTokens};
+}

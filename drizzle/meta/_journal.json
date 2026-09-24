@@ -43,6 +43,13 @@
       "when": 1790229138497,
       "tag": "0005_mighty_black_widow",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790241134151,
+      "tag": "0006_hesitant_rocket_raccoon",
+      "breakpoints": true
     }
   ]
 }

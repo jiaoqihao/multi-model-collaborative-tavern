@@ -79,9 +79,9 @@ function updateSummaries(story:StoryState,history:Turn[],events:string[],turnId:
  if(context.sceneSummaries.length%4===0){const group=context.sceneSummaries.slice(-4);const chapter:SceneSummary={id:crypto.randomUUID(),content:group.map((summary,index)=>`场景 ${index+1}\n${summary.content}`).join("\n").slice(0,6000),sourceTurnIds:[...new Set(group.flatMap(summary=>summary.sourceTurnIds))],createdTurnId:turnId,level:"chapter"};context.chapterSummaries.push(chapter);records.push(chapter);}
  return records;
 }
-export async function runTurn(args:{story:StoryState;history:Turn[];input:string;mode:Mode;directorId:string;turnId:string;call:CallModel;memorySearch?:(character:Character,query:string,budgetTokens:number)=>Promise<{items:Character["memories"];usedVector:boolean;indexed:number;total:number}>;regenerate?:boolean;progress?:(text:string)=>void;cache?:StageCache;describeModel?:(id:string)=>string}){
+export async function runTurn(args:{story:StoryState;history:Turn[];input:string;mode:Mode;directorId:string;turnId:string;call:CallModel;memorySearch?:(character:Character,query:string,budgetTokens:number)=>Promise<{items:Character["memories"];usedVector:boolean;indexed:number;total:number;backend?:"d1"|"qdrant"|"lexical"}>;regenerate?:boolean;progress?:(text:string)=>void;cache?:StageCache;describeModel?:(id:string)=>string}){
  const {history,input,mode,directorId,turnId,call}=args;const story=structuredClone(args.story);
- const diagnostics:StageTrace[]=[];const retrievals:{characterId:string;usedVector:boolean;indexed:number;total:number}[]=[];const stageArgs={cache:args.cache,diagnostics,describeModel:args.describeModel};const stageModel=(stage:"settlement"|"narrator"|"memory")=>story.stageModels?.[stage]||directorId;
+ const diagnostics:StageTrace[]=[];const retrievals:{characterId:string;usedVector:boolean;indexed:number;total:number;backend?:"d1"|"qdrant"|"lexical"}[]=[];const stageArgs={cache:args.cache,diagnostics,describeModel:args.describeModel};const stageModel=(stage:"settlement"|"narrator"|"memory")=>story.stageModels?.[stage]||directorId;
  try{for(const c of story.characters){c.card=characterCard(c);readCardMemory(c.card)}}catch(error){throw new AppError((error as Error).message)}
  const ids=new Set(story.characters.map(c=>c.id));const collaborationMode=story.collaborationMode||"balanced";const deliveryLimit=collaborationMode==="economy"?2:4;
  const characterCards=story.characters.map(c=>compactCharacterContext(c,input,collaborationMode==="economy"?700:1200));
@@ -100,7 +100,7 @@ export async function runTurn(args:{story:StoryState;history:Turn[];input:string
  args.progress?.(plan.deliveries.length?`${plan.deliveries.map(d=>story.characters.find(c=>c.id===d.characterId)!.name).join("、")}正在回应…`:"场景正在发展…");
  const responses=await Promise.all(plan.deliveries.map(async d=>{
   const c=story.characters.find(c=>c.id===d.characterId)!;
-  const search=await args.memorySearch?.(c,d.visible,1400);if(search)retrievals.push({characterId:c.id,usedVector:search.usedVector,indexed:search.indexed,total:search.total});
+  const search=await args.memorySearch?.(c,d.visible,1400);if(search)retrievals.push({characterId:c.id,usedVector:search.usedVector,indexed:search.indexed,total:search.total,...(search.backend?{backend:search.backend}:{})});
   const actorModel=c.modelId==="default"?directorId:c.modelId;const response=await stageCall(`actor:${c.id}`,call,actorModel,
    '只扮演给定角色。每次读取完整 character.card，包括 mytavern_memory 累积记忆；character.state 为当前状态，优先于卡片中的历史状态。仅依据自己的设定、记忆与 visible 行动，不知道其他角色的秘密或未获得的信息。direction 是幕后指导，不可当作故事台词。可以说谎、沉默、误解；actionIntent 只是动作意图，不能强行决定他人的结果。固定性格不轻易改变。thought 是简短的虚构角色内心独白。返回 {"speech":"台词或空串","actionIntent":"尝试的动作","emotion":"当前情绪","thought":"角色内心","goal":"当前目标","relationship":"对玩家的态度及理由"}。',actorContext(c,d.visible,d.direction,search?.items),actorSchema,buildPresetContext("actor",story,history,d.visible,c,trigger,search?.items),`角色「${c.name}」回应`,stageArgs);
   return {characterId:c.id,...response};

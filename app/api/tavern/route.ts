@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AppError, ancestry, characterSchema, profileSchema, storySchema, turnSchema } from "@/lib/tavern/validation";
-import { allTurns, characterLibraryRows, commitTurn, createStory, db, encryptionSecret, generationStageCache, getStory, getWorkspace, owner, profileRows, presetRows, pruneGenerationStages, requireOrigin } from "@/lib/tavern/store";
+import { allTurns, characterLibraryRows, commitTurn, createStory, db, encryptionSecret, generationStageCache, getStory, getWorkspace, owner, profileRows, presetRows, pruneGenerationStages, requireOrigin, vectorConnectionRows } from "@/lib/tavern/store";
 import { complete, cryptKey, validateEndpoint } from "@/lib/tavern/models";
 import { isolateCreativeMessages, PROTOCOL_VERSION } from "@/lib/tavern/protocols";
 import { demoTurn, runTurn } from "@/lib/tavern/engine";
@@ -11,6 +11,7 @@ import { modelDiscoverySchema, discoveryKey, listAvailableModels } from "@/lib/t
 import { clearCardMemory } from "@/lib/tavern/cards";
 import { embedTexts, supportsEmbeddings } from "@/lib/tavern/embeddings";
 import { embeddingModelKey, indexStoryMemoryBatch, searchMemoryVectors } from "@/lib/tavern/vector-store";
+import { testQdrantConnection, validateQdrantUrl } from "@/lib/tavern/qdrant";
 
 export const dynamic="force-dynamic";
 const headers={"Cache-Control":"no-store"};
@@ -21,11 +22,43 @@ function embeddingProfile(story:StoryState,rows:{id:string;data:string;encrypted
  if(!settings.embeddingModel||!profile||!supportsEmbeddings(profile)||!row?.encrypted_key)throw new AppError("混合检索需要选择带密钥且支持 embeddings 的模型配置，并填写向量模型 ID。");
  return {row,profile,model:settings.embeddingModel};
 }
+async function requireVectorConnection(user:string,story:StoryState){
+ if(story.retrieval?.mode!=="hybrid"||story.retrieval.backend!=="qdrant")return;
+ const id=story.retrieval.vectorConnectionId;
+ const row=(await vectorConnectionRows(user)).find(item=>item.id===id);
+ if(!row||!row.encrypted_key)throw new AppError("请选择已保存且带密钥的 Qdrant 连接。");
+ return row;
+}
 export async function GET(request:Request){try{return Response.json(await getWorkspace(owner(request),new URL(request.url).searchParams.get("story")||undefined),{headers});}catch(e){return fail(e)}}
 export async function POST(request:Request){try{
  requireOrigin(request);const user=owner(request);const raw=await request.text();if(new TextEncoder().encode(raw).length>2*1024*1024)throw new AppError("请求内容超过 2 MB。",413);let body;try{body=JSON.parse(raw)}catch{throw new AppError("请求不是有效的 JSON。");}
  const action=z.string().parse(body.action);
- if(action==="createStory"){const story=body.story?storySchema.parse(body.story):undefined;if(story)embeddingProfile(story,await profileRows(user));const id=await createStory(user,story);return Response.json(await getWorkspace(user,id),{headers});}
+ if(action==="createStory"){const story=body.story?storySchema.parse(body.story):undefined;if(story){embeddingProfile(story,await profileRows(user));await requireVectorConnection(user,story)}const id=await createStory(user,story);return Response.json(await getWorkspace(user,id),{headers});}
+ if(action==="saveVectorConnection"){
+  const input=z.object({id:z.string().uuid().optional(),revision:z.number().int().positive().optional(),name:z.string().trim().min(1).max(80),baseUrl:z.string().max(300),apiKey:z.string().max(500).optional()}).strict().parse(body.connection);
+  const baseUrl=validateQdrantUrl(input.baseUrl);const rows=await vectorConnectionRows(user);const existing=input.id?rows.find(row=>row.id===input.id):undefined;
+  if(input.id&&!existing)throw new AppError("找不到 Qdrant 连接。",404);
+  if(!existing&&rows.length>=5)throw new AppError("最多保存 5 个 Qdrant 连接。");
+  if(existing&&input.revision!==existing.revision)throw new AppError("连接配置已更新，请刷新后重试。",409);
+  if(existing&&existing.base_url!==baseUrl&&!input.apiKey)throw new AppError("更改 Qdrant 地址时请重新填写密钥。");
+  const encrypted=input.apiKey?await cryptKey(input.apiKey,encryptionSecret()):existing?.encrypted_key||"";
+  if(!encrypted)throw new AppError("请填写 Qdrant API 密钥。");
+  if(existing){const result=await db().prepare("UPDATE vector_connections SET name=?,base_url=?,encrypted_key=?,revision=revision+1 WHERE id=? AND owner=? AND revision=?").bind(input.name,baseUrl,encrypted,existing.id,user,existing.revision).run();if(!result.meta.changes)throw new AppError("连接配置已更新，请刷新后重试。",409)}
+  else await db().prepare("INSERT INTO vector_connections (id,owner,name,base_url,encrypted_key,revision) VALUES (?,?,?,?,?,1)").bind(crypto.randomUUID(),user,input.name,baseUrl,encrypted).run();
+  return Response.json(await getWorkspace(user,body.storyId),{headers});
+ }
+ if(action==="testVectorConnection"){
+  const id=z.string().uuid().parse(body.connectionId);const row=(await vectorConnectionRows(user)).find(item=>item.id===id);
+  if(!row||!row.encrypted_key)throw new AppError("请先保存 Qdrant 连接。",404);
+  return Response.json(await testQdrantConnection({baseUrl:row.base_url,apiKey:await cryptKey(row.encrypted_key,encryptionSecret(),true)}),{headers});
+ }
+ if(action==="deleteVectorConnection"){
+  const id=z.string().uuid().parse(body.connectionId);const revision=z.number().int().positive().parse(body.connectionRevision);
+  const stories=(await db().prepare("SELECT data FROM stories WHERE owner=?").bind(user).all<{data:string}>()).results;
+  if(stories.some(row=>{const settings=storySchema.parse(JSON.parse(row.data)).retrieval;return settings?.mode==="hybrid"&&settings.backend==="qdrant"&&settings.vectorConnectionId===id}))throw new AppError("这个连接仍被故事使用，请先切换故事的检索设置。");
+  const result=await db().prepare("DELETE FROM vector_connections WHERE id=? AND owner=? AND revision=?").bind(id,user,revision).run();if(!result.meta.changes)throw new AppError("连接配置已更新或不存在，请刷新后重试。",409);
+  return Response.json(await getWorkspace(user,body.storyId),{headers});
+ }
  if(action==="saveLibraryCharacter"){
   const character=characterSchema.parse({...body.character,memories:[]});if(character.card)character.card=clearCardMemory(character.card);const id=body.libraryId?z.string().uuid().parse(body.libraryId):crypto.randomUUID();
   const profiles=await profileRows(user);if(character.modelId!=="default"&&!profiles.some(p=>p.id===character.modelId))throw new AppError("角色引用了不存在的模型。");
@@ -55,8 +88,9 @@ export async function POST(request:Request){try{
   if(row.revision!==revision)throw new AppError("故事已更新，请刷新后再建立索引。",409);
   const story=storySchema.parse(JSON.parse(row.data));const selected=embeddingProfile(story,await profileRows(user));
   if(!selected)throw new AppError("请先在故事设置中启用混合检索。");
+  const vectorRow=await requireVectorConnection(user,story);
   const turns=await allTurns(storyId);const scope={owner:user,storyId,modelKey:await embeddingModelKey(selected.profile,selected.model),profile:selected.profile,key:await cryptKey(selected.row.encrypted_key,encryptionSecret(),true),embeddingModel:selected.model,ancestorTurnIds:new Set(ancestry(turns,row.head_id).map(turn=>turn.id))};
-  return Response.json(await indexStoryMemoryBatch(scope,story.characters),{headers});
+  return Response.json(await indexStoryMemoryBatch({...scope,...(vectorRow?{qdrant:{baseUrl:vectorRow.base_url,apiKey:await cryptKey(vectorRow.encrypted_key,encryptionSecret(),true)}}:{})},story.characters),{headers});
  }
  if(action==="listModels"){
   const input=modelDiscoverySchema.parse(body.connection);
@@ -86,7 +120,8 @@ export async function POST(request:Request){try{
   const start=Date.now();await complete(JSON.parse(p.data),p.encrypted_key?await cryptKey(p.encrypted_key,encryptionSecret(),true):"","这是 API 连接测试。仅回复 OK。","请回复 OK。");return Response.json({ok:true,elapsed:Date.now()-start},{headers});
  }
  if(action==="deleteProfile"){
-  const using=await db().prepare("SELECT id FROM stories WHERE owner=? AND (director_id=? OR data LIKE ? OR data LIKE ?)").bind(user,body.profileId,`%"modelId":"${z.string().uuid().parse(body.profileId)}"%`,`%"embeddingProfileId":"${body.profileId}"%`).first();
+  const profileId=z.string().uuid().parse(body.profileId);
+  const using=await db().prepare("SELECT id FROM stories WHERE owner=? AND (director_id=? OR instr(data,?)>0 OR instr(data,?)>0)").bind(user,profileId,`"modelId":"${profileId}"`,`"embeddingProfileId":"${profileId}"`).first();
   const libraryUsing=await db().prepare("SELECT id FROM character_library WHERE owner=? AND instr(data,?)>0").bind(user,JSON.stringify(body.profileId)).first();
   if(using||libraryUsing)throw new AppError("这个模型仍被故事或角色库使用，请先更换分配。");
   await db().prepare("DELETE FROM profiles WHERE id=? AND owner=?").bind(body.profileId,user).run();return Response.json(await getWorkspace(user,body.storyId),{headers});
@@ -96,7 +131,7 @@ export async function POST(request:Request){try{
   if(action==="saveStory"){
    const story=storySchema.parse(body.story);const current=JSON.parse(row.data) as StoryState;
    story.characters.forEach(c=>{c.memories=current.characters.find(old=>old.id===c.id)?.memories||[];});
-   const rows=await profileRows(user);const valid=new Set(rows.map(p=>p.id));if(story.characters.some(c=>c.modelId!=="default"&&!valid.has(c.modelId))||Object.values(story.stageModels).some(id=>id&&!valid.has(id)))throw new AppError("故事阶段或角色引用了不存在的模型。");embeddingProfile(story,rows);
+   const rows=await profileRows(user);const valid=new Set(rows.map(p=>p.id));if(story.characters.some(c=>c.modelId!=="default"&&!valid.has(c.modelId))||Object.values(story.stageModels).some(id=>id&&!valid.has(id)))throw new AppError("故事阶段或角色引用了不存在的模型。");embeddingProfile(story,rows);await requireVectorConnection(user,story);
    const available=new Set((await presetRows(user)).map(p=>p.id));
    const selected=[...Object.values(story.presetSelection),...story.characters.map(c=>c.presetId).filter(id=>id!=="inherit")].filter(Boolean);
    if(selected.some(id=>!available.has(id)))throw new AppError("所选预设不存在或无权访问。");
@@ -151,7 +186,7 @@ export async function POST(request:Request){try{
    const describeModel=(id:string)=>{const profile=profiles.find(p=>p.id===id);if(!profile)return id;const data=JSON.parse(profile.data) as Profile;return `${data.name} · ${data.model}`};
    const history=ancestry(turns,parentId);let memorySearch:Parameters<typeof runTurn>[0]["memorySearch"];
    if(!row.demo&&story.retrieval?.mode==="hybrid"){
-    try{const selected=embeddingProfile(story,profiles);if(selected){const scope={owner:user,storyId:row.id,modelKey:await embeddingModelKey(selected.profile,selected.model),profile:selected.profile,key:await cryptKey(selected.row.encrypted_key,encryptionSecret(),true),embeddingModel:selected.model,ancestorTurnIds:new Set(history.map(turn=>turn.id))};const cached=new Map<string,ReturnType<typeof searchMemoryVectors>>();memorySearch=(character,query,budgetTokens)=>{const key=JSON.stringify([character.id,query,budgetTokens]);if(!cached.has(key))cached.set(key,searchMemoryVectors(scope,character,query,budgetTokens));return cached.get(key)!}}}
+    try{const selected=embeddingProfile(story,profiles);if(selected){const vectorRow=await requireVectorConnection(user,story);const scope={owner:user,storyId:row.id,modelKey:await embeddingModelKey(selected.profile,selected.model),profile:selected.profile,key:await cryptKey(selected.row.encrypted_key,encryptionSecret(),true),embeddingModel:selected.model,ancestorTurnIds:new Set(history.map(turn=>turn.id)),...(vectorRow?{qdrant:{baseUrl:vectorRow.base_url,apiKey:await cryptKey(vectorRow.encrypted_key,encryptionSecret(),true)}}:{})};const cached=new Map<string,ReturnType<typeof searchMemoryVectors>>();memorySearch=(character,query,budgetTokens)=>{const key=JSON.stringify([character.id,query,budgetTokens]);if(!cached.has(key))cached.set(key,searchMemoryVectors(scope,character,query,budgetTokens));return cached.get(key)!}}}
     catch(error){console.warn("Vector retrieval configuration unavailable",error instanceof Error?error.name:"unknown")}
    }
    if(!row.demo)await pruneGenerationStages(user);const result=row.demo?demoTurn(story,args.input,args.mode,args.requestId):await runTurn({story,history,input:args.input,mode:args.mode,directorId:row.director_id,turnId:args.requestId,call,memorySearch,cache:generationStageCache(args.requestId,row.id,user,fingerprint),describeModel,regenerate:args.regenerate,progress:message=>send("progress",{message})});

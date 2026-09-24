@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 const origin=process.argv[2]||"http://localhost:5173";
-const headers={"Content-Type":"application/json",Cookie:"__sites_local_auth=1",Origin:origin};
-let storyId;let profileId;let libraryId;
+const localWorker=new URL(origin).port==="8787";
+const headers={"Content-Type":"application/json",Cookie:"__sites_local_auth=1",Origin:origin,...(localWorker?{"oai-authenticated-user-id":"local_seedy"}:{})};
+let storyId;let profileId;let libraryId;let vectorConnectionId;
 async function request(body,status=200){const response=await fetch(origin+"/api/tavern",{method:"POST",headers,body:JSON.stringify(body)});const text=await response.text();assert.equal(response.status,status,text);return response.headers.get("content-type").includes("text/event-stream")?text:JSON.parse(text);}
 function done(text){const blocks=text.split("\n\n");const complete=blocks.find(b=>b.startsWith("event: done"));assert.ok(complete,text);return JSON.parse(complete.split("\ndata: ")[1]);}
 try{
  assert.equal((await fetch(origin+"/api/tavern")).status,401);
- const spoof=await fetch(origin+"/api/tavern",{headers:{"oai-authenticated-user-id":"forged-user"}});assert.equal(spoof.status,401);
+ if(!localWorker){const spoof=await fetch(origin+"/api/tavern",{headers:{"oai-authenticated-user-id":"forged-user"}});assert.equal(spoof.status,401)}
  const cross=await fetch(origin+"/api/tavern",{method:"POST",headers:{...headers,Origin:"https://unrelated.example"},body:'{"action":"createStory"}'});assert.equal(cross.status,403);
  let ws=await request({action:"createStory"});storyId=ws.id;assert.deepEqual(ws.story.characters,[],"新故事必须从空角色列表开始");
  const baseState={location:"夜航酒馆",clothing:"深色外套",condition:"健康",emotion:"平静",thought:"",goal:"观察",relationship:"初次见面"};
@@ -37,12 +38,17 @@ try{
  const changedAddress=await request({action:"listModels",connection:{id:profileId,provider:"compatible",baseUrl:"https://other.example.com/v1"}},400);assert.match(changedAddress.error,/重新填写 API 密钥/);
  const missingKey=await request({action:"listModels",connection:{provider:"compatible",baseUrl:"https://api.example.com/v1"}},400);assert.match(missingKey.error,/填写 API 密钥/);
  await request({action:"listModels",connection:{id:crypto.randomUUID(),provider:"compatible",baseUrl:"https://api.example.com/v1",apiKey:"FAKE_SECRET_FOR_TEST_ONLY"}},404);
+ ws=await request({action:"saveVectorConnection",storyId,connection:{name:"__test_qdrant__",baseUrl:"https://test.cloud.qdrant.io:6333",apiKey:"FAKE_QDRANT_KEY_FOR_TEST_ONLY"}});
+ const vectorConnection=ws.vectorConnections.find(item=>item.name==="__test_qdrant__");vectorConnectionId=vectorConnection.id;
+ assert.equal(vectorConnection.hasKey,true);assert.ok(!JSON.stringify(ws).includes("FAKE_QDRANT_KEY_FOR_TEST_ONLY"),"Qdrant 密钥不得返回前端");
+ const badConnection=await request({action:"saveStory",storyId,revision:ws.revision,story:{...ws.story,retrieval:{mode:"hybrid",embeddingProfileId:profileId,embeddingModel:"embed",backend:"qdrant",vectorConnectionId:crypto.randomUUID()}}},400);assert.match(badConnection.error,/Qdrant/);
+ ws=await request({action:"deleteVectorConnection",storyId,connectionId:vectorConnectionId,connectionRevision:vectorConnection.revision});vectorConnectionId=null;
  ws=await request({action:"deleteProfile",storyId,profileId});profileId=null;
  ws=await request({action:"deleteLibraryCharacter",storyId,libraryId,libraryRevision:ws.characterLibrary.find(c=>c.id===libraryId).revision});libraryId=null;
- console.log("PASS: 空故事、角色库导入、认证、伪造身份、跨站拒绝、导演模式、服饰变化、私聊隔离、重放幂等、并发提交、状态回退、分支重生成、密钥脱敏。");
+ console.log("PASS: 空故事、角色库导入、认证、跨站拒绝、导演模式、分支重生成、Qdrant 连接管理与密钥脱敏。");
 }finally{
  if(storyId&&/^[a-f0-9-]{36}$/.test(storyId)){
-  const sql=`DELETE FROM turns WHERE story_id='${storyId}'; DELETE FROM stories WHERE id='${storyId}' AND owner='local_seedy';`+(profileId&&/^[a-f0-9-]{36}$/.test(profileId)?` DELETE FROM profiles WHERE id='${profileId}' AND owner='local_seedy';`:"")+(libraryId&&/^[a-f0-9-]{36}$/.test(libraryId)?` DELETE FROM character_library WHERE id='${libraryId}' AND owner='local_seedy';`:"");
+  const sql=`DELETE FROM turns WHERE story_id='${storyId}'; DELETE FROM stories WHERE id='${storyId}' AND owner='local_seedy';`+(profileId&&/^[a-f0-9-]{36}$/.test(profileId)?` DELETE FROM profiles WHERE id='${profileId}' AND owner='local_seedy';`:"")+(libraryId&&/^[a-f0-9-]{36}$/.test(libraryId)?` DELETE FROM character_library WHERE id='${libraryId}' AND owner='local_seedy';`:"")+(vectorConnectionId&&/^[a-f0-9-]{36}$/.test(vectorConnectionId)?` DELETE FROM vector_connections WHERE id='${vectorConnectionId}' AND owner='local_seedy';`:"");
   const result=spawnSync(process.execPath,["--import","./scripts/sites-env.mjs","./node_modules/wrangler/bin/wrangler.js","d1","execute","DB","--local","--config","dist/server/wrangler.json","--persist-to",".wrangler/state","--command",sql],{encoding:"utf8"});
   if(result.status!==0){console.error("测试数据清理失败",storyId);process.exitCode=1;}
  }

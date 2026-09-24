@@ -9,7 +9,7 @@ export function initialStory(): StoryState { return {
   playerState:{location:"当前场景",clothing:"日常服饰",condition:"健康",inventory:""},
   title: "未命名故事", world: "", player: "我", playerPersona: "", style: "第二人称有限视角。不要替玩家决定重大行动、台词或内心。",
   opening: "故事尚未开始。请先设定舞台，或直接写下你的第一步。",
-  presetSelection:{director:"",actor:"",settlement:"",narrator:"",memory:""}, stageModels:{settlement:"",narrator:"",memory:""}, collaborationMode:"balanced", retrieval:{mode:"lexical",embeddingProfileId:"",embeddingModel:""}, context:{threads:[],sceneSummaries:[],chapterSummaries:[]}, characters: []
+  presetSelection:{director:"",actor:"",settlement:"",narrator:"",memory:""}, stageModels:{settlement:"",narrator:"",memory:""}, collaborationMode:"balanced", retrieval:{mode:"lexical",embeddingProfileId:"",embeddingModel:"",backend:"d1",vectorConnectionId:""}, context:{threads:[],sceneSummaries:[],chapterSummaries:[]}, characters: []
 }; }
 
 /** Rich fixture for tests and explicit demos that need a cast. */
