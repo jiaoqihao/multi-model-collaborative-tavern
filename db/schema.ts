@@ -19,6 +19,11 @@ export const generationStages = sqliteTable("generation_stages", {
  requestId:text("request_id").notNull(), stageKey:text("stage_key").notNull(), storyId:text("story_id").notNull().references(()=>stories.id),
  owner:text("owner").notNull(), fingerprint:text("fingerprint").notNull(), data:text("data").notNull(), updatedAt:text("updated_at").notNull()
 },t=>[primaryKey({columns:[t.requestId,t.stageKey]}),index("idx_generation_stages_story_owner").on(t.storyId,t.owner)]);
+export const memoryVectors = sqliteTable("memory_vectors", {
+ owner:text("owner").notNull(), storyId:text("story_id").notNull().references(()=>stories.id), characterId:text("character_id").notNull(),
+ modelKey:text("model_key").notNull(), memoryId:text("memory_id").notNull(), turnId:text("turn_id").notNull(),
+ contentHash:text("content_hash").notNull(), dimensions:integer("dimensions").notNull(), vector:text("vector").notNull(), createdAt:text("created_at").notNull()
+},t=>[primaryKey({columns:[t.owner,t.storyId,t.characterId,t.modelKey,t.memoryId]})]);
 export const storyEvents = sqliteTable("story_events", {
  id:text("id").primaryKey(), storyId:text("story_id").notNull().references(()=>stories.id), turnId:text("turn_id").notNull().references(()=>turns.id),
  eventIndex:integer("event_index").notNull(), description:text("description").notNull(), visibleTo:text("visible_to").notNull(), visibleToPlayer:integer("visible_to_player").notNull(), createdAt:text("created_at").notNull()

@@ -42,13 +42,13 @@ async function stageCall<T>(key:string,call:CallModel,id:string,system:string,in
  const value=await jsonCall(call,id,system,input,schema,context,label,args.diagnostics,args.describeModel?.(id)||id);await args.cache?.save(key,value);return value;
 }
 export function retrieveMemories(c:Character,visible:string,budgetTokens=1400){return selectMemoryEvidence(c,visible,budgetTokens).items;}
-export function actorContext(c:Character,visible:string,direction:string){const selected=selectMemoryEvidence(c,visible,1400);return {character:{id:c.id,name:c.name,role:c.role,persona:c.persona,secret:c.secret,state:c.state,card:parseCharacterCard(characterCard(c).source)},memories:selected.items,recentPerceptions:c.memories.filter(m=>m.kind==="observation"&&(m.status||"active")==="active").slice(-6),visible,direction};}
+export function actorContext(c:Character,visible:string,direction:string,evidence?:Character["memories"]){const selected=evidence||selectMemoryEvidence(c,visible,1400).items;return {character:{id:c.id,name:c.name,role:c.role,persona:c.persona,secret:c.secret,state:c.state,card:parseCharacterCard(characterCard(c).source)},memories:selected,recentPerceptions:c.memories.filter(m=>m.kind==="observation"&&(m.status||"active")==="active").slice(-6),visible,direction};}
 function memoryTags(content:string,story:StoryState){return [...new Set(story.characters.filter(c=>content.includes(c.name)).map(c=>c.name))].slice(0,20)}
 function appendMemory(c:Character,memory:Character["memories"][number]){const duplicate=[...c.memories].reverse().find(m=>(m.status||"active")==="active"&&m.kind===memory.kind&&m.content.trim()===memory.content.trim());if(duplicate){duplicate.status="superseded";duplicate.validUntilTurnId=memory.turnId;memory.supersedes=[duplicate.id]}c.memories.push(memory)}
 function ensureIds(ids:string[],allowed:Set<string>){if(ids.some(id=>!allowed.has(id)))throw new AppError("模型引用了不存在的角色，本轮未保存。",502);}
-export function buildPresetContext(stage:PresetContext["stage"],story:StoryState,history:Turn[],visible:string,character?:Character,trigger:PresetContext["trigger"]="normal"):PresetContext {
+export function buildPresetContext(stage:PresetContext["stage"],story:StoryState,history:Turn[],visible:string,character?:Character,trigger:PresetContext["trigger"]="normal",evidence?:Character["memories"]):PresetContext {
  const actor=stage==="actor"||stage==="memory";
- const packed=buildContextHistory(stage,story,history,visible,character,contextBudgetFor(stage));const knownHistory=packed.history;
+ const packed=buildContextHistory(stage,story,history,visible,character,contextBudgetFor(stage),evidence);const knownHistory=packed.history;
  const description=actor?[character?.role,character?.persona].filter(Boolean).join("\n"):"";
  const scenario=actor?character?.state.location||"":story.world;
  return {stage,characterId:character?.id,trigger,history:knownHistory,diagnostics:packed.diagnostics,macros:{char:character?.name||(stage==="director"?"导演":"旁白"),charIfNotGroup:character?.name||"",user:story.player,description,personality:description,persona:actor?"":story.playerPersona,scenario,mesExamples:"",lastUserMessage:visible,lastMessage:knownHistory.at(-1)?.content||""},markers:{charDescription:description,charPersonality:description,personaDescription:actor?"":story.playerPersona,scenario,worldInfoBefore:actor?"":story.world,worldInfoAfter:"",dialogueExamples:""}};
@@ -79,9 +79,9 @@ function updateSummaries(story:StoryState,history:Turn[],events:string[],turnId:
  if(context.sceneSummaries.length%4===0){const group=context.sceneSummaries.slice(-4);const chapter:SceneSummary={id:crypto.randomUUID(),content:group.map((summary,index)=>`场景 ${index+1}\n${summary.content}`).join("\n").slice(0,6000),sourceTurnIds:[...new Set(group.flatMap(summary=>summary.sourceTurnIds))],createdTurnId:turnId,level:"chapter"};context.chapterSummaries.push(chapter);records.push(chapter);}
  return records;
 }
-export async function runTurn(args:{story:StoryState;history:Turn[];input:string;mode:Mode;directorId:string;turnId:string;call:CallModel;regenerate?:boolean;progress?:(text:string)=>void;cache?:StageCache;describeModel?:(id:string)=>string}){
+export async function runTurn(args:{story:StoryState;history:Turn[];input:string;mode:Mode;directorId:string;turnId:string;call:CallModel;memorySearch?:(character:Character,query:string,budgetTokens:number)=>Promise<{items:Character["memories"];usedVector:boolean;indexed:number;total:number}>;regenerate?:boolean;progress?:(text:string)=>void;cache?:StageCache;describeModel?:(id:string)=>string}){
  const {history,input,mode,directorId,turnId,call}=args;const story=structuredClone(args.story);
- const diagnostics:StageTrace[]=[];const stageArgs={cache:args.cache,diagnostics,describeModel:args.describeModel};const stageModel=(stage:"settlement"|"narrator"|"memory")=>story.stageModels?.[stage]||directorId;
+ const diagnostics:StageTrace[]=[];const retrievals:{characterId:string;usedVector:boolean;indexed:number;total:number}[]=[];const stageArgs={cache:args.cache,diagnostics,describeModel:args.describeModel};const stageModel=(stage:"settlement"|"narrator"|"memory")=>story.stageModels?.[stage]||directorId;
  try{for(const c of story.characters){c.card=characterCard(c);readCardMemory(c.card)}}catch(error){throw new AppError((error as Error).message)}
  const ids=new Set(story.characters.map(c=>c.id));const collaborationMode=story.collaborationMode||"balanced";const deliveryLimit=collaborationMode==="economy"?2:4;
  const characterCards=story.characters.map(c=>compactCharacterContext(c,input,collaborationMode==="economy"?700:1200));
@@ -100,8 +100,9 @@ export async function runTurn(args:{story:StoryState;history:Turn[];input:string
  args.progress?.(plan.deliveries.length?`${plan.deliveries.map(d=>story.characters.find(c=>c.id===d.characterId)!.name).join("、")}正在回应…`:"场景正在发展…");
  const responses=await Promise.all(plan.deliveries.map(async d=>{
   const c=story.characters.find(c=>c.id===d.characterId)!;
+  const search=await args.memorySearch?.(c,d.visible,1400);if(search)retrievals.push({characterId:c.id,usedVector:search.usedVector,indexed:search.indexed,total:search.total});
   const actorModel=c.modelId==="default"?directorId:c.modelId;const response=await stageCall(`actor:${c.id}`,call,actorModel,
-   '只扮演给定角色。每次读取完整 character.card，包括 mytavern_memory 累积记忆；character.state 为当前状态，优先于卡片中的历史状态。仅依据自己的设定、记忆与 visible 行动，不知道其他角色的秘密或未获得的信息。direction 是幕后指导，不可当作故事台词。可以说谎、沉默、误解；actionIntent 只是动作意图，不能强行决定他人的结果。固定性格不轻易改变。thought 是简短的虚构角色内心独白。返回 {"speech":"台词或空串","actionIntent":"尝试的动作","emotion":"当前情绪","thought":"角色内心","goal":"当前目标","relationship":"对玩家的态度及理由"}。',actorContext(c,d.visible,d.direction),actorSchema,buildPresetContext("actor",story,history,d.visible,c,trigger),`角色「${c.name}」回应`,stageArgs);
+   '只扮演给定角色。每次读取完整 character.card，包括 mytavern_memory 累积记忆；character.state 为当前状态，优先于卡片中的历史状态。仅依据自己的设定、记忆与 visible 行动，不知道其他角色的秘密或未获得的信息。direction 是幕后指导，不可当作故事台词。可以说谎、沉默、误解；actionIntent 只是动作意图，不能强行决定他人的结果。固定性格不轻易改变。thought 是简短的虚构角色内心独白。返回 {"speech":"台词或空串","actionIntent":"尝试的动作","emotion":"当前情绪","thought":"角色内心","goal":"当前目标","relationship":"对玩家的态度及理由"}。',actorContext(c,d.visible,d.direction,search?.items),actorSchema,buildPresetContext("actor",story,history,d.visible,c,trigger,search?.items),`角色「${c.name}」回应`,stageArgs);
   return {characterId:c.id,...response};
  }));
  args.progress?.("正在协调行动与状态…");
@@ -136,13 +137,14 @@ export async function runTurn(args:{story:StoryState;history:Turn[];input:string
  else await Promise.all(affected.map(async c=>{
   const previous=story.characters.find(old=>old.id===c.id)!;
   const visible=plan.deliveries.find(d=>d.characterId===c.id)?.visible||"";
+  const memoryEvidence=visible?await args.memorySearch?.(previous,visible,1400):undefined;
   const schema=z.union([cardMemoryDeltaSchema,cardMemoryUpdateSchema]).superRefine((update,ctx)=>{try{if("summary" in update)writeCardMemory(c.card!,update,c.state,turnId,"model");else writeCardMemoryDelta(c.card!,update,c.state,turnId,"model")}catch(error){ctx.addIssue({code:"custom",message:(error as Error).message})}});
   const memoryId=stageModel("memory");const update=await stageCall(`memory:${c.id}`,call,memoryId,
    '你负责更新角色卡记忆，并以增量方式整理当前这一位角色的记忆；不扮演角色，不创作新事件。card 中 mytavern_memory 是旧记忆。只返回本轮变化：summaryAppend 是不超过 1000 字的本轮记忆摘要；factsAdd 是新增确定事实，转述内容必须注明“某人声称”；factsRemove 只能逐字复制已过时的旧事实；beliefsAdd / beliefsRemove 管理主观判断；openThreadsAdd / openThreadsResolve 管理约定与待办线索。没有变化使用 []。received 是角色实际看见听见的内容，events 是已裁决且该角色可感知的事件，personalBelief 是角色主观判断。不得加入未知秘密、幕后指令、玩家内心、未成立的动作意图或其他角色知识。仅返回 {"summaryAppend":"本轮新增摘要","factsAdd":[],"factsRemove":[],"beliefsAdd":[],"beliefsRemove":[],"openThreadsAdd":[],"openThreadsResolve":[]}。',
-   {characterId:c.id,name:c.name,card:parseCharacterCard(c.card!.source),currentState:c.state,received:visible,events:settled.events.filter(e=>e.visibleTo.includes(c.id)).map(e=>e.description),threadChanges:threadChanges.filter(thread=>thread.characterIds.includes(c.id)),personalBelief:responses.find(r=>r.characterId===c.id)?.thought||"",relevantPastMemories:retrieveMemories(previous,visible)},schema,buildPresetContext("memory",story,history,visible,c,trigger),`角色「${c.name}」记忆更新`,stageArgs);
+   {characterId:c.id,name:c.name,card:parseCharacterCard(c.card!.source),currentState:c.state,received:visible,events:settled.events.filter(e=>e.visibleTo.includes(c.id)).map(e=>e.description),threadChanges:threadChanges.filter(thread=>thread.characterIds.includes(c.id)),personalBelief:responses.find(r=>r.characterId===c.id)?.thought||"",relevantPastMemories:memoryEvidence?.items||retrieveMemories(previous,visible)},schema,buildPresetContext("memory",story,history,visible,c,trigger,memoryEvidence?.items),`角色「${c.name}」记忆更新`,stageArgs);
   c.card="summary" in update?writeCardMemory(c.card!,update,c.state,turnId,"model"):writeCardMemoryDelta(c.card!,update,c.state,turnId,"model");
  }));
- return {snapshot,narrative:output.narrative,trace:{selected:plan.deliveries.map(d=>d.characterId),events:settled.events.map(e=>e.description),eventRecords:settled.events,deliveries:plan.deliveries.map(({characterId,visible})=>({characterId,visible})),stages:diagnostics,collaborationMode,complexityScore,...(sceneSummary?{sceneSummary}:{}),...(summaryRecords?.length?{summaryRecords}:{}),...(threadChanges.length?{threadChanges}:{})}};
+ return {snapshot,narrative:output.narrative,trace:{selected:plan.deliveries.map(d=>d.characterId),events:settled.events.map(e=>e.description),eventRecords:settled.events,deliveries:plan.deliveries.map(({characterId,visible})=>({characterId,visible})),stages:diagnostics,retrievals,collaborationMode,complexityScore,...(sceneSummary?{sceneSummary}:{}),...(summaryRecords?.length?{summaryRecords}:{}),...(threadChanges.length?{threadChanges}:{})}};
 }
 
 export function demoTurn(story:StoryState,input:string,mode:Mode,turnId:string){

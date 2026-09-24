@@ -9,15 +9,23 @@ import { compilePreset, PresetError } from "@/lib/tavern/presets";
 import type { PresetContext } from "@/lib/tavern/presets";
 import { modelDiscoverySchema, discoveryKey, listAvailableModels } from "@/lib/tavern/model-discovery";
 import { clearCardMemory } from "@/lib/tavern/cards";
+import { embedTexts, supportsEmbeddings } from "@/lib/tavern/embeddings";
+import { embeddingModelKey, indexStoryMemoryBatch, searchMemoryVectors } from "@/lib/tavern/vector-store";
 
 export const dynamic="force-dynamic";
 const headers={"Cache-Control":"no-store"};
 function fail(error:unknown){if(error instanceof AppError)return Response.json({error:error.message},{status:error.status,headers});if(error instanceof z.ZodError)return Response.json({error:"输入格式不正确："+error.issues.map(i=>i.path.join(".")+" "+i.message).slice(0,3).join("；")},{status:400,headers});console.error("Tavern operation failed",error instanceof Error?error.name:"unknown");return Response.json({error:"操作暂时失败，输入已保留。请重试；若持续失败请检查数据库迁移与服务端配置。"},{status:500,headers});}
+function embeddingProfile(story:StoryState,rows:{id:string;data:string;encrypted_key:string}[]){
+ const settings=story.retrieval;if(settings?.mode!=="hybrid")return;
+ const row=rows.find(item=>item.id===settings.embeddingProfileId);const profile=row?JSON.parse(row.data) as Profile:undefined;
+ if(!settings.embeddingModel||!profile||!supportsEmbeddings(profile)||!row?.encrypted_key)throw new AppError("混合检索需要选择带密钥且支持 embeddings 的模型配置，并填写向量模型 ID。");
+ return {row,profile,model:settings.embeddingModel};
+}
 export async function GET(request:Request){try{return Response.json(await getWorkspace(owner(request),new URL(request.url).searchParams.get("story")||undefined),{headers});}catch(e){return fail(e)}}
 export async function POST(request:Request){try{
  requireOrigin(request);const user=owner(request);const raw=await request.text();if(new TextEncoder().encode(raw).length>2*1024*1024)throw new AppError("请求内容超过 2 MB。",413);let body;try{body=JSON.parse(raw)}catch{throw new AppError("请求不是有效的 JSON。");}
  const action=z.string().parse(body.action);
- if(action==="createStory"){const id=await createStory(user,body.story?storySchema.parse(body.story):undefined);return Response.json(await getWorkspace(user,id),{headers});}
+ if(action==="createStory"){const story=body.story?storySchema.parse(body.story):undefined;if(story)embeddingProfile(story,await profileRows(user));const id=await createStory(user,story);return Response.json(await getWorkspace(user,id),{headers});}
  if(action==="saveLibraryCharacter"){
   const character=characterSchema.parse({...body.character,memories:[]});if(character.card)character.card=clearCardMemory(character.card);const id=body.libraryId?z.string().uuid().parse(body.libraryId):crypto.randomUUID();
   const profiles=await profileRows(user);if(character.modelId!=="default"&&!profiles.some(p=>p.id===character.modelId))throw new AppError("角色引用了不存在的模型。");
@@ -42,12 +50,27 @@ export async function POST(request:Request){try{
   story.characters.push(character);const result=await db().prepare("UPDATE stories SET data=?,root=CASE WHEN head_id IS NULL THEN ? ELSE root END,revision=revision+1 WHERE id=? AND owner=? AND revision=?").bind(JSON.stringify(story),JSON.stringify(story),storyId,user,revision).run();if(!result.meta.changes)throw new AppError("导入冲突，请刷新后重试。",409);
   return Response.json(await getWorkspace(user,storyId),{headers});
  }
+ if(action==="indexMemoryVectors"){
+  const storyId=z.string().parse(body.storyId);const revision=z.number().int().nonnegative().parse(body.revision);const row=await getStory(user,storyId);
+  if(row.revision!==revision)throw new AppError("故事已更新，请刷新后再建立索引。",409);
+  const story=storySchema.parse(JSON.parse(row.data));const selected=embeddingProfile(story,await profileRows(user));
+  if(!selected)throw new AppError("请先在故事设置中启用混合检索。");
+  const turns=await allTurns(storyId);const scope={owner:user,storyId,modelKey:await embeddingModelKey(selected.profile,selected.model),profile:selected.profile,key:await cryptKey(selected.row.encrypted_key,encryptionSecret(),true),embeddingModel:selected.model,ancestorTurnIds:new Set(ancestry(turns,row.head_id).map(turn=>turn.id))};
+  return Response.json(await indexStoryMemoryBatch(scope,story.characters),{headers});
+ }
  if(action==="listModels"){
   const input=modelDiscoverySchema.parse(body.connection);
   const stored=input.id?(await profileRows(user)).find(p=>p.id===input.id):undefined;
   if(input.id&&!stored)throw new AppError("找不到此模型配置。",404);
   const key=await discoveryKey(input,stored,encryptionSecret);
   return Response.json(await listAvailableModels(input,key,request.signal),{headers});
+ }
+ if(action==="testEmbedding"){
+  const profileId=z.string().uuid().parse(body.profileId);const model=z.string().trim().min(1).max(150).parse(body.model);
+  const row=(await profileRows(user)).find(item=>item.id===profileId);if(!row||!row.encrypted_key)throw new AppError("请先保存带密钥的向量接口配置。",404);
+  const profile=JSON.parse(row.data) as Profile;
+  const [vector]=await embedTexts(profile,await cryptKey(row.encrypted_key,encryptionSecret(),true),model,["角色记忆连接测试"],"query");
+  return Response.json({ok:true,dimensions:vector.length},{headers});
  }
  if(action==="saveProfile"){
   const p=profileSchema.parse(body.profile);validateEndpoint(p);
@@ -63,7 +86,7 @@ export async function POST(request:Request){try{
   const start=Date.now();await complete(JSON.parse(p.data),p.encrypted_key?await cryptKey(p.encrypted_key,encryptionSecret(),true):"","这是 API 连接测试。仅回复 OK。","请回复 OK。");return Response.json({ok:true,elapsed:Date.now()-start},{headers});
  }
  if(action==="deleteProfile"){
-  const using=await db().prepare("SELECT id FROM stories WHERE owner=? AND (director_id=? OR data LIKE ?)").bind(user,body.profileId,`%"modelId":"${z.string().uuid().parse(body.profileId)}"%`).first();
+  const using=await db().prepare("SELECT id FROM stories WHERE owner=? AND (director_id=? OR data LIKE ? OR data LIKE ?)").bind(user,body.profileId,`%"modelId":"${z.string().uuid().parse(body.profileId)}"%`,`%"embeddingProfileId":"${body.profileId}"%`).first();
   const libraryUsing=await db().prepare("SELECT id FROM character_library WHERE owner=? AND instr(data,?)>0").bind(user,JSON.stringify(body.profileId)).first();
   if(using||libraryUsing)throw new AppError("这个模型仍被故事或角色库使用，请先更换分配。");
   await db().prepare("DELETE FROM profiles WHERE id=? AND owner=?").bind(body.profileId,user).run();return Response.json(await getWorkspace(user,body.storyId),{headers});
@@ -73,7 +96,7 @@ export async function POST(request:Request){try{
   if(action==="saveStory"){
    const story=storySchema.parse(body.story);const current=JSON.parse(row.data) as StoryState;
    story.characters.forEach(c=>{c.memories=current.characters.find(old=>old.id===c.id)?.memories||[];});
-   const valid=new Set((await profileRows(user)).map(p=>p.id));if(story.characters.some(c=>c.modelId!=="default"&&!valid.has(c.modelId))||Object.values(story.stageModels).some(id=>id&&!valid.has(id)))throw new AppError("故事阶段或角色引用了不存在的模型。");
+   const rows=await profileRows(user);const valid=new Set(rows.map(p=>p.id));if(story.characters.some(c=>c.modelId!=="default"&&!valid.has(c.modelId))||Object.values(story.stageModels).some(id=>id&&!valid.has(id)))throw new AppError("故事阶段或角色引用了不存在的模型。");embeddingProfile(story,rows);
    const available=new Set((await presetRows(user)).map(p=>p.id));
    const selected=[...Object.values(story.presetSelection),...story.characters.map(c=>c.presetId).filter(id=>id!=="inherit")].filter(Boolean);
    if(selected.some(id=>!available.has(id)))throw new AppError("所选预设不存在或无权访问。");
@@ -126,7 +149,12 @@ export async function POST(request:Request){try{
    send("progress",{message:row.demo?"正在生成规则演示…":"开始本轮创作…"});
    const fingerprintBytes=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify({protocolVersion:PROTOCOL_VERSION,storyId:row.id,revision:row.revision,parentId,input:args.input,mode:args.mode,regenerate:!!args.regenerate,profiles:profiles.map(p=>[p.id,p.data]),presets:presets.map(p=>[p.id,p.revision])})));const fingerprint=Array.from(new Uint8Array(fingerprintBytes),b=>b.toString(16).padStart(2,"0")).join("");
    const describeModel=(id:string)=>{const profile=profiles.find(p=>p.id===id);if(!profile)return id;const data=JSON.parse(profile.data) as Profile;return `${data.name} · ${data.model}`};
-   if(!row.demo)await pruneGenerationStages(user);const result=row.demo?demoTurn(story,args.input,args.mode,args.requestId):await runTurn({story,history:ancestry(turns,parentId),input:args.input,mode:args.mode,directorId:row.director_id,turnId:args.requestId,call,cache:generationStageCache(args.requestId,row.id,user,fingerprint),describeModel,regenerate:args.regenerate,progress:message=>send("progress",{message})});
+   const history=ancestry(turns,parentId);let memorySearch:Parameters<typeof runTurn>[0]["memorySearch"];
+   if(!row.demo&&story.retrieval?.mode==="hybrid"){
+    try{const selected=embeddingProfile(story,profiles);if(selected){const scope={owner:user,storyId:row.id,modelKey:await embeddingModelKey(selected.profile,selected.model),profile:selected.profile,key:await cryptKey(selected.row.encrypted_key,encryptionSecret(),true),embeddingModel:selected.model,ancestorTurnIds:new Set(history.map(turn=>turn.id))};const cached=new Map<string,ReturnType<typeof searchMemoryVectors>>();memorySearch=(character,query,budgetTokens)=>{const key=JSON.stringify([character.id,query,budgetTokens]);if(!cached.has(key))cached.set(key,searchMemoryVectors(scope,character,query,budgetTokens));return cached.get(key)!}}}
+    catch(error){console.warn("Vector retrieval configuration unavailable",error instanceof Error?error.name:"unknown")}
+   }
+   if(!row.demo)await pruneGenerationStages(user);const result=row.demo?demoTurn(story,args.input,args.mode,args.requestId):await runTurn({story,history,input:args.input,mode:args.mode,directorId:row.director_id,turnId:args.requestId,call,memorySearch,cache:generationStageCache(args.requestId,row.id,user,fingerprint),describeModel,regenerate:args.regenerate,progress:message=>send("progress",{message})});
    const turn:Turn={id:args.requestId,parentId,input:args.input,mode:args.mode,createdAt:new Date().toISOString(),demo:!!row.demo,...result,trace:{...result.trace,presets:[...appliedPresets.values()]},snapshot:storySchema.parse(result.snapshot)};
    await commitTurn(row,turn);send("done",await getWorkspace(user,row.id));
   }catch(e){send("error",{error:e instanceof AppError?e.message:"本轮生成未完成，请刷新确认进度后重试。"});}

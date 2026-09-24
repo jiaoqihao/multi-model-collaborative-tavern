@@ -26,10 +26,10 @@ export function selectMemoryEvidence(character:Character,query:string,budgetToke
 
 function packHistory(messages:ChatMessage[],budgetTokens:number){const selected:ChatMessage[]=[];let usedTokens=0;for(const message of [...messages].reverse()){const cost=estimateContextTokens(message.content)+12;if(usedTokens+cost>budgetTokens)continue;selected.unshift(message);usedTokens+=cost;}return {selected,usedTokens,omitted:messages.length-selected.length}}
 
-export function buildContextHistory(stage:GenerationStage,story:StoryState,history:Turn[],visible:string,character?:Character,budgetTokens=2200){
+export function buildContextHistory(stage:GenerationStage,story:StoryState,history:Turn[],visible:string,character?:Character,budgetTokens=2200,evidence?:Memory[]){
  const actor=stage==="actor"||stage==="memory";let selectedMemories=0,omittedMemories=0;
  const messages:ChatMessage[]=[];
- if(actor&&character){const selection=selectMemoryEvidence(character,visible,Math.floor(budgetTokens*.65));messages.push(...selection.items.map(memory=>({role:"user" as const,content:`[${memory.kind}/${memory.status||"active"}] ${memory.content}`})));selectedMemories=selection.items.length;omittedMemories=selection.omitted;}
+ if(actor&&character){const selection=evidence?{items:evidence,omitted:Math.max(0,character.memories.length-evidence.length)}:selectMemoryEvidence(character,visible,Math.floor(budgetTokens*.65));messages.push(...selection.items.map(memory=>({role:"user" as const,content:`[${memory.kind}/${memory.status||"active"}] ${memory.content}`})));selectedMemories=selection.items.length;omittedMemories=selection.omitted;}
  else messages.push(...history.map(turn=>({role:"assistant" as const,content:stage==="director"?turn.trace.events.join("\n"):turn.narrative})));
  if(visible)messages.push({role:"user",content:visible});
  const packed=packHistory(messages,budgetTokens);return {history:packed.selected,diagnostics:{budgetTokens,usedTokens:packed.usedTokens,selectedMemories,omittedMemories:omittedMemories+packed.omitted,historyItems:packed.selected.length}};
