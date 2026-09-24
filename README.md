@@ -2,7 +2,7 @@
 
 一个面向多角色长篇叙事的多模型协作系统。项目将单轮生成拆成导演路由、角色并行响应、事件裁决、有限视角旁白、记忆整理与可选一致性复核，并通过版本化 JSON 协议约束阶段间通信，减少模型输出结构漂移。
 
-系统采用按角色隔离的信息流：每个角色只接收自己的完整角色卡、相关记忆和获准感知的事件；统一上下文组装器按 Token 预算、相关性、重要性、时效和生命周期选择证据。角色记忆支持关键词检索与可选的 D1 向量索引混合检索。长期状态由事件溯源、剧情线索、场景／章节摘要和带有效区间的角色记忆共同维护，父回合指针与完整快照提供可回退、可重新生成且不会串线的剧情分支。
+系统采用按角色隔离的信息流：每个角色只接收自己的完整角色卡、相关记忆和获准感知的事件；统一上下文组装器按 Token 预算、相关性、重要性、时效和生命周期选择证据。角色记忆支持关键词检索与可选的 D1 / Qdrant 向量混合检索。长期状态由事件溯源、剧情线索、场景／章节摘要和带有效区间的角色记忆共同维护，父回合指针与完整快照提供可回退、可重新生成且不会串线的剧情分支。
 
 应用基于 React、TypeScript 与 Vinext 构建，运行于 Cloudflare Workers；D1（SQLite）与 Drizzle ORM 负责用户隔离的故事快照、生成阶段缓存、角色库、加密模型配置和追加式审计记录。模型层适配 OpenAI Chat Completions、OpenAI 兼容协议、Anthropic Messages 与 Google Gemini GenerateContent，并提供经济、均衡、精细三档协作策略。
 
@@ -18,7 +18,7 @@
 - 导演分发信息 → 角色独立回应 → 协调事件及客观状态 → 生成有限视角旁白 → 数据库整体保存。
 - 用户预设只作为创作偏好，和不可覆盖的程序输出协议分离；协议版本进入阶段追踪和缓存指纹，降低预设破坏 JSON 结构的概率。
 - 各阶段采用统一 Token 预算装配上下文，按相关性、重要性、时效和生命周期筛选记忆；历史提问可回查旧事实，当前问题默认排除已失效事实。
-- 可选混合检索将角色记忆向量持久化于 D1；先限定当前用户、故事、角色和剧情分支，再以余弦相似度和关键词结果做 RRF 排序。向量覆盖不足或接口不可用时自动使用关键词检索。
+- 可选混合检索将角色记忆向量持久化于 D1 或 Qdrant Cloud；先限定当前用户、故事、角色和剧情分支，再与关键词结果做 RRF 排序。Qdrant 不可用时退回 D1，向量覆盖不足时使用关键词检索。
 - 记忆带来源、标签、生命周期和有效区间；事件、场景／章节摘要与剧情线索另存追加式审计记录，分支仍由祖先快照严格隔离。
 - 长剧情使用场景摘要、章节摘要与保留长期约定的分层压缩，不再简单截取末尾文本。
 - 已校验的生成阶段暂存 24 小时；同一次失败请求重试时复用已完成阶段，成功保存后自动清理，避免重复调用。
@@ -41,6 +41,8 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0002_whole_dexter_bennett.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0003_smiling_enchantress.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0004_cheerful_wild_child.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0005_mighty_black_widow.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0006_hesitant_rocket_raccoon.sql
 npm run dev
 ```
 
@@ -120,7 +122,7 @@ npm run test:features
 
 ## 当前边界
 
-- 每个故事最多保存 150 个回合版本，适合验证产品流程；已有结构化剧情线索、分层摘要和可选向量检索，但尚未实现历史归档或专用近似最近邻索引。原始经历列表仍保留在回合快照中。
+- 每个故事最多保存 150 个回合版本，适合验证产品流程；已有结构化剧情线索、分层摘要和可选 Qdrant 向量检索，但尚未实现历史归档。原始经历列表仍保留在回合快照中。
 - 一轮仅执行一次角色响应阶段，尚无角色之间的多轮内部讨论。调用数随协作模式变化：经济模式减少角色与记忆模型调用；均衡模式执行标准五阶段；精细模式的复杂回合增加一次一致性复核。格式重试和网络重试可能继续增加次数。
 - 推送的是生成阶段进度，正文在全部生成、校验和保存后显示；尚未逐字流式显示正文。
 - 信息范围、事件成立和旁白一致性的语义判断仍依赖模型，结构校验不能保证所有剧情都无矛盾。已使用真实 DeepSeek 接口及合成故事联调；经济模式记忆长度冲突与无效角色引用污染阶段缓存的问题已修复，模型语义波动仍需持续评估。经济模式卡片中的长内容会明确标记为节选，完整事件及线索保留在故事快照中。
